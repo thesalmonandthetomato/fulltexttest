@@ -1,18 +1,44 @@
-# Full-text extraction ontology — draft v0.1
+# Full-text extraction ontology — draft v0.2
 
-**Status:** locked pilot draft; subject to revision after the first five obtainable records.
+**Status:** locked pilot draft for records 1–8, subject to human review of candidate new codes.
 
-## Purpose
+## Extraction architecture
 
-Describe what each included paper actually investigated, how the evidence was generated, and what outcomes were assessed. This extends the existing abstract-level evidence-map ontology rather than replacing it.
+Each categorical field should use a **restricted controlled vocabulary** for filtering, aggregation and visualisation. Where the source contains useful terminology that is more specific than the controlled vocabulary, preserve it in a separate `*_detail` field. Do not silently create new controlled categories during extraction.
+
+When a paper appears to require a category not represented by the codebook, use `other`/`other_candidate`, preserve the source wording in the detail field, and flag `new_code_candidate = true`. A human reviewer will approve, reject or modify the proposed new code before it enters the controlled vocabulary.
+
+The extraction therefore follows:
+
+**full text → source-supported extraction → controlled code(s) → optional detail → candidate new code → human approval → codebook update**
 
 ## Core fields
 
 ### 1. Farmed species
-Mandatory anchor for every included record. Use the existing species ontology. Full-text extraction independently verifies the existing annotation; discrepancies are flagged rather than silently overwritten.
+Mandatory anchor for every included record. Use the existing species ontology/codebook. Full-text extraction independently verifies the existing annotation; discrepancies are flagged rather than silently overwritten.
 
 ### 2. Study system
-The system, environment, population, community, institution, or social/economic setting that is the **primary object or setting of investigation**. Do not simply repeat the farmed species because it is the species under study. Use the farmed animals/species as the study system only when they themselves constitute the primary system being investigated. Examples include RAS, benthic community, microbial community, pathogen/parasite population, surrounding ecosystem, human/local community, farmers/workers, economic/market system, production system, or farm–environment interaction. Multiple values are permitted.
+The system, environment, population, community, institution, or social/economic setting that is the **primary object or setting of investigation**. Do not simply repeat the farmed species because it is the species under study. Use the farmed animals/species as the study system only when they themselves constitute the primary system being investigated.
+
+**Controlled vocabulary:**
+- `farmed_animal`
+- `aquaculture_production_system`
+- `environmental_system`
+- `biological_population`
+- `social_system`
+- `economic_system`
+- `policy_governance_system`
+- `multiple`
+- `other`
+- `unclear`
+
+**Subcodes/examples:**
+- aquaculture production: `marine_cage`, `land_based_system`, `pond`, `raceway`, `RAS`, `hatchery`, `other_aquaculture_system`
+- environmental: `freshwater`, `marine`, `sediment_benthic`, `ecosystem`, `other_environmental_system`
+- biological population: `wild_population`, `microbial_community`, `pathogen_parasite_population`, `other_population`
+- social: `local_community`, `farmers_workers`, `consumers`, `other_social_group`
+
+Retain precise source terminology in `study_system_detail`.
 
 ### 3. Geography
 Study location(s), retaining the existing evidence-map geography logic. Distinguish study location from author affiliation and background mentions.
@@ -20,137 +46,213 @@ Study location(s), retaining the existing evidence-map geography logic. Distingu
 ## Purpose and nature of the paper
 
 ### 4. Study objective
-A concise 1–2 sentence summary of the primary objective/research question/aim of the paper. Based primarily on the stated objective, research question or aim; do not simply copy the abstract and do not confuse background or recommendations with the study objective.
+A concise summary of the primary objective/research question/aim. This is a free-text field, based primarily on the stated objective, research question or aim.
 
 ### 5. Paper type
-Broad interdisciplinary classification:
-- empirical research
-- review/synthesis
-- modelling/simulation
-- methodological/technical
-- perspective/opinion
-- conceptual/theoretical
-- commentary/editorial
-- policy/governance analysis
-- case study
-- other
-- unclear
+**Controlled vocabulary:**
+- `empirical_research`
+- `review_synthesis`
+- `modelling_simulation`
+- `methodological_technical`
+- `perspective_opinion`
+- `conceptual_theoretical`
+- `commentary_editorial`
+- `news_analysis`
+- `policy_governance_analysis`
+- `case_study`
+- `other`
+- `unclear`
 
 ### 6. Evidence generation
-How the paper generates or derives its evidence:
-- empirical
-- modelled
-- conceptual
-- secondary/review
-- mixed
-- unclear
+**Controlled vocabulary:**
+- `empirical`
+- `modelled`
+- `conceptual`
+- `secondary_review`
+- `reported_secondary_information`
+- `mixed`
+- `unclear`
+
+`reported_secondary_information` is for news articles and similar pieces reporting information from external sources without being a formal review/synthesis.
 
 ### 7. Study approach
-Broad methodological orientation:
-- quantitative
-- qualitative
-- mixed methods
-- descriptive
-- modelling/simulation
-- review/synthesis
-- methodological/technical
-- other
-- unclear
+**Controlled vocabulary:**
+- `quantitative`
+- `qualitative`
+- `mixed_methods`
+- `descriptive`
+- `modelling`
+- `review_synthesis`
+- `methodological`
+- `conceptual`
+- `other`
+- `unclear`
 
 Multiple values may apply.
 
 ### 8. Study method
-What the researchers actually did, where applicable:
-- experiment
-- observational study
-- field study
-- laboratory study
-- survey/questionnaire
-- interview
-- focus group
-- ethnographic/participatory study
-- case study
-- monitoring/assessment
-- comparative study
-- modelling/simulation
-- laboratory/analytical analysis
-- genetic/genomic analysis
-- review
-- meta-analysis
-- methodological development
-- perspective/conceptual analysis
-- other
-- not applicable
-- unclear
+**Controlled vocabulary:**
+- `experiment`
+- `observational_study`
+- `field_study`
+- `laboratory_study`
+- `survey_questionnaire`
+- `interview`
+- `focus_group`
+- `ethnographic_participatory`
+- `case_study`
+- `monitoring_assessment`
+- `comparative_study`
+- `modelling_simulation`
+- `laboratory_analytical_analysis`
+- `genetic_genomic_analysis`
+- `review`
+- `meta_analysis`
+- `methodological_development`
+- `perspective_conceptual_analysis`
+- `other`
+- `not_applicable`
+- `unclear`
 
-Multiple values may apply. `not applicable` is legitimate for papers such as perspectives/opinion pieces where methods are not relevant.
+Multiple values may apply.
 
-## Study context and biological/production descriptors
+## Study context and production descriptors
 
 ### 9. Study context
-Where/how the study is situated:
-- commercial aquaculture
-- research aquaculture
-- hatchery
-- laboratory
-- experimental facility
-- commercial farm
-- field/natural environment
-- community/social setting
-- administrative/institutional setting
-- documentary/literature
-- multiple
-- other
-- unclear
+**Controlled vocabulary:**
+- `commercial_aquaculture`
+- `research_aquaculture`
+- `hatchery`
+- `laboratory`
+- `experimental_research`
+- `commercial_farm`
+- `field_natural_environment`
+- `semi_natural_environment`
+- `community_social_setting`
+- `administrative_institutional_setting`
+- `documentary_literature`
+- `multiple`
+- `other`
+- `unclear`
 
 ### 10. Life stage
-Life stage(s) of the farmed species actually studied. Retain both author-reported terminology and standardised terminology where useful. Do not infer life stage solely from incidental mentions or unsupported body-weight assumptions.
+Use the existing standardised life-stage codebook where available. Preserve author terminology in `life_stage_detail`. Multiple values are permitted.
 
 ### 11. Fish origin
-Origin of the farmed study animals:
-- commercial farm
-- research facility
-- hatchery
-- experimental stock
-- wild-derived
-- wild-caught
-- multiple
-- unclear
+**Controlled vocabulary:**
+- `commercial_farm`
+- `research_facility`
+- `hatchery`
+- `experimental_stock`
+- `wild_derived`
+- `wild_caught`
+- `multiple`
+- `not_applicable`
+- `unclear`
 
 ### 12. Facility / production system
-Physical or production system used by the farmed species, where applicable. Use the existing evidence-map terminology where available; otherwise classify conservatively. Examples include sea cage/net pen, tank, raceway, pond, hatchery unit, RAS/recirculating system, flow-through system, land-based facility, IMTA, other, not applicable, unclear.
+Use a restricted codebook aligned with the existing evidence-map terminology. Examples include:
+- `marine_cage_net_pen`
+- `tank`
+- `raceway`
+- `pond`
+- `hatchery_unit`
+- `RAS`
+- `flow_through`
+- `land_based_facility`
+- `IMTA`
+- `laboratory_system`
+- `semi_natural_stream_channel`
+- `other`
+- `not_applicable`
+- `unclear`
+
+Preserve exact facility terminology in `facility_detail`.
 
 ### 13. Temporal scope
-Study/acquisition period and duration where relevant. Do not force qualitative or documentary studies into an experimental duration framework.
+Free text for study/acquisition period and duration where relevant, with structured dates/duration added where reliably extractable. Do not force qualitative or documentary studies into an experimental-duration framework.
 
 ### 14. Study unit
-The entity at which observation, measurement, intervention, comparison or analysis occurs, e.g. individual fish, group of fish, tank, cage, pond, farm, site, ecosystem/community, household, individual person, organisation, document, population, other, unclear.
+**Controlled vocabulary:**
+- `individual_fish`
+- `fish_group`
+- `tank`
+- `cage`
+- `pond`
+- `farm`
+- `site`
+- `ecosystem_community`
+- `household`
+- `individual_person`
+- `organisation`
+- `document`
+- `population`
+- `other`
+- `not_applicable`
+- `unclear`
 
 ## What the study investigates
 
 ### 15. Focal factor
-The factor, phenomenon, exposure, practice, condition, intervention, issue or subject being investigated, compared, assessed or described. This is deliberately interdisciplinary. Examples include diet/feed, temperature, salinity, oxygen, stocking density, disease/pathogen, parasite, husbandry/production practice, facility/system, environmental condition, genetic factor, management practice, social factor, economic factor, policy/regulation, other, none/observational, unclear.
+**Controlled vocabulary:**
+- `diet_feed`
+- `temperature`
+- `salinity`
+- `oxygen`
+- `stocking_density`
+- `disease_pathogen`
+- `parasite`
+- `husbandry_production_practice`
+- `facility_system`
+- `environmental_condition`
+- `genetic_factor`
+- `management_practice`
+- `social_factor`
+- `economic_factor`
+- `policy_regulation`
+- `other`
+- `none_observational`
+- `unclear`
 
-**Do not use a separate focal-factor-role field.** Whether something is manipulated, observed, compared, described, reported or modelled should be captured through study method/approach and the study description itself.
+Preserve the actual factor/stressor/intervention in `focal_factor_detail`.
 
 ### 16. Comparison
-Record an **explicit comparative analysis/design** performed by the authors. Do not infer comparison merely because multiple categories, treatments, systems, places or studies are mentioned. Where applicable, record the actual things being compared, with a controlled comparison type where useful:
-- control/reference
-- treatment/comparison group
-- before/after
-- spatial comparison
-- temporal comparison
-- species comparison
-- system comparison
-- dose/gradient comparison
-- other
-- no explicit comparison
-- unclear
+Record an **explicit comparative analysis/design** performed by the authors. Do not infer comparison merely because multiple categories, treatments, systems, places or studies are mentioned.
 
-Multiple comparisons are permitted. The extraction should preserve the substantive comparison (e.g. `alternative protein sources: fishmeal vs plant/alternative sources`) rather than merely returning `yes`.
+**Controlled comparison types:**
+- `control_reference`
+- `treatment_comparison_group`
+- `before_after`
+- `spatial_comparison`
+- `temporal_comparison`
+- `species_comparison`
+- `system_comparison`
+- `dose_gradient_comparison`
+- `other`
+- `no_explicit_comparison`
+- `unclear`
+
+Record the actual things compared in `comparison_detail`. Multiple comparisons are permitted.
 
 ### 17. Study outcome
-The outcome, response, characteristic, perception, attitude, behaviour, experience, practice, condition, ecological response, production result or other result that the study assesses or seeks to characterise. This is **not restricted to quantitative measurements**. Qualitative constructs such as perceptions/attitudes are valid study outcomes. Multiple outcomes are permitted.
+Use a restricted hierarchical outcome codebook. Initial controlled domains:
+- `physiological`
+- `production`
+- `health_disease`
+- `behaviour_welfare`
+- `microbiology`
+- `ecological`
+- `environmental`
+- `genetic_genomic`
+- `economic`
+- `social`
+- `policy_governance`
+- `perception_attitude`
+- `other`
+- `not_applicable`
+- `unclear`
+
+Where useful, use a controlled subcode (e.g. `physiological → metabolism`; `production → growth`; `microbiology → community_structure`). Preserve the actual measured/assessed outcome in `study_outcome_detail`. Multiple outcomes are permitted.
 
 ## Existing evidence-map classification
 
@@ -161,41 +263,39 @@ Retain and align with the existing abstract-level evidence-map hierarchy:
 - Feature
 - Component
 
-The full-text process should not create a competing topic hierarchy. It may refine/verify existing topic assignments using the same substantive-topic framework.
+The full-text process should not create a competing topic hierarchy.
 
 ## Evidence and quality control
 
 ### 22. Evidence section
-Where supporting evidence occurs:
-- Methods
-- Results
-- Methods + Results
-- Supplementary material
-- other
+**Controlled vocabulary:** `methods`, `results`, `methods_results`, `supplementary_material`, `other`, `not_applicable`.
 
 ### 23. Evidence passage
-Short supporting passage(s) from the full text. Each important extracted characteristic should have traceable supporting evidence where practicable.
+Short source-supported passage(s) from the full text. Do not substitute model summaries for source evidence.
 
 ### 24. Extraction confidence
-- high
-- medium
-- low
+`high`, `medium`, `low`.
 
 ### 25. Review required
-Boolean flag indicating that the extraction is ambiguous, contradictory, poorly supported or otherwise merits human review.
+Boolean flag indicating ambiguity, contradiction, poor support or a candidate new code.
 
-### 26. Full-text quality/status
-Record whether the full text is available and whether extraction quality is good, acceptable, poor or unusable; also record whether Methods and Results sections were detected.
+### 26. New code candidate
+Boolean plus proposed parent/code/label/detail fields. A proposed code is **not part of the controlled vocabulary until human approval**.
+
+### 27. Full-text quality/status
+Record full-text availability/quality and whether Methods and Results sections were detected.
 
 ## General extraction rules
 
 1. Prioritise Methods and Results for factual study-characteristic extraction.
 2. Use Introduction/Discussion only as corroborating context unless the relevant information is genuinely unavailable elsewhere.
 3. Do not treat references or background mentions as evidence that the focal study investigated something.
-4. Never infer a characteristic when the full text does not support it; use `unclear`/`not applicable` as appropriate.
-5. Preserve the distinction between the farmed species and the study system; do not duplicate species in study system without a substantive reason.
+4. Never infer a characteristic when the full text does not support it; use `unclear`/`not_applicable` as appropriate.
+5. Preserve the distinction between farmed species and study system; do not duplicate species in study system without a substantive reason.
 6. Preserve multiple values when a paper genuinely contains multiple species, systems, stages, experiments, methods, comparisons or outcomes.
 7. A paper may be qualitative, conceptual or opinion-based; absence of conventional experimental methods is not an error.
-8. Do not silently overwrite existing manually curated database annotations. Full-text results should initially be stored as independent verification/extraction fields.
-9. For papers containing multiple distinct experiments or study components, retain experiment/component-level distinctions where necessary rather than collapsing incompatible characteristics into one value.
-10. `not applicable` is preferred where a field genuinely does not apply; `unclear` means the field applies but the full text does not support a confident assignment.
+8. Do not silently overwrite existing manually curated database annotations.
+9. For papers containing multiple distinct experiments or study components, retain distinctions where necessary.
+10. New controlled codes require human approval. Until approved, use `other`/`unclear`, preserve the source wording, and flag `new_code_candidate=true`.
+11. The model must not invent controlled labels merely to make a paper fit the codebook.
+12. Keep controlled code, source-supported detail, and evidence passage as separate data elements.
