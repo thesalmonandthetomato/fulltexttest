@@ -1,6 +1,6 @@
 # Full-text extraction ontology — draft v0.1
 
-**Status:** locked draft for pilot testing; subject to revision after the first five obtainable records.
+**Status:** locked pilot draft; subject to revision after the first five obtainable records.
 
 ## Purpose
 
@@ -12,7 +12,7 @@ Describe what each included paper actually investigated, how the evidence was ge
 Mandatory anchor for every included record. Use the existing species ontology. Full-text extraction independently verifies the existing annotation; discrepancies are flagged rather than silently overwritten.
 
 ### 2. Study system
-The biological, ecological, environmental, social, economic or production system actually investigated. It may be the farmed animals/species themselves or a related system such as a benthic community, microbial community, pathogen/parasite population, surrounding ecosystem, human/local community, farmers/workers, economic/market system, production system, or farm–environment interaction. Multiple values are permitted.
+The system, environment, population, community, institution, or social/economic setting that is the **primary object or setting of investigation**. Do not simply repeat the farmed species because it is the species under study. Use the farmed animals/species as the study system only when they themselves constitute the primary system being investigated. Examples include RAS, benthic community, microbial community, pathogen/parasite population, surrounding ecosystem, human/local community, farmers/workers, economic/market system, production system, or farm–environment interaction. Multiple values are permitted.
 
 ### 3. Geography
 Study location(s), retaining the existing evidence-map geography logic. Distinguish study location from author affiliation and background mentions.
@@ -134,7 +134,7 @@ The factor, phenomenon, exposure, practice, condition, intervention, issue or su
 **Do not use a separate focal-factor-role field.** Whether something is manipulated, observed, compared, described, reported or modelled should be captured through study method/approach and the study description itself.
 
 ### 16. Comparison
-Where applicable, the type of comparison made:
+Record an **explicit comparative analysis/design** performed by the authors. Do not infer comparison merely because multiple categories, treatments, systems, places or studies are mentioned. Where applicable, record the actual things being compared, with a controlled comparison type where useful:
 - control/reference
 - treatment/comparison group
 - before/after
@@ -143,9 +143,11 @@ Where applicable, the type of comparison made:
 - species comparison
 - system comparison
 - dose/gradient comparison
-- no comparison
 - other
+- no explicit comparison
 - unclear
+
+Multiple comparisons are permitted. The extraction should preserve the substantive comparison (e.g. `alternative protein sources: fishmeal vs plant/alternative sources`) rather than merely returning `yes`.
 
 ### 17. Study outcome
 The outcome, response, characteristic, perception, attitude, behaviour, experience, practice, condition, ecological response, production result or other result that the study assesses or seeks to characterise. This is **not restricted to quantitative measurements**. Qualitative constructs such as perceptions/attitudes are valid study outcomes. Multiple outcomes are permitted.
@@ -191,8 +193,9 @@ Record whether the full text is available and whether extraction quality is good
 2. Use Introduction/Discussion only as corroborating context unless the relevant information is genuinely unavailable elsewhere.
 3. Do not treat references or background mentions as evidence that the focal study investigated something.
 4. Never infer a characteristic when the full text does not support it; use `unclear`/`not applicable` as appropriate.
-5. Preserve the distinction between the farmed species and the study system.
-6. Preserve multiple values when a paper genuinely contains multiple species, systems, stages, experiments, methods or outcomes.
+5. Preserve the distinction between the farmed species and the study system; do not duplicate species in study system without a substantive reason.
+6. Preserve multiple values when a paper genuinely contains multiple species, systems, stages, experiments, methods, comparisons or outcomes.
 7. A paper may be qualitative, conceptual or opinion-based; absence of conventional experimental methods is not an error.
 8. Do not silently overwrite existing manually curated database annotations. Full-text results should initially be stored as independent verification/extraction fields.
 9. For papers containing multiple distinct experiments or study components, retain experiment/component-level distinctions where necessary rather than collapsing incompatible characteristics into one value.
+10. `not applicable` is preferred where a field genuinely does not apply; `unclear` means the field applies but the full text does not support a confident assignment.
