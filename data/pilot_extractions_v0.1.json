@@ -1,0 +1,33 @@
+{
+  "ontology_version": "v0.1",
+  "status": "pilot_in_progress",
+  "extractions": [
+    {
+      "record_number": "104-310-034-385-768",
+      "doi": "10.1016/j.aqrep.2024.102601",
+      "title": "Carbon footprint of alternative protein sources for Atlantic salmon (Salmo salar) aquaculture: A two-step systematic literature review",
+      "farmed_species": ["Atlantic salmon (Salmo salar)"],
+      "study_system": ["Atlantic salmon aquaculture", "aquaculture feed-production system"],
+      "geography": "Not a single study location; international literature/system-level analysis",
+      "study_objective": "To identify potential alternative protein sources for Atlantic salmon aquaculture and assess their carbon footprint.",
+      "paper_type": "review/synthesis",
+      "evidence_generation": "secondary/review",
+      "study_approach": "review/synthesis",
+      "study_method": ["systematic literature review"],
+      "study_context": ["commercial aquaculture", "aquaculture production system"],
+      "life_stage": "not applicable / not specified",
+      "fish_origin": "not applicable",
+      "facility_production_system": "not applicable",
+      "temporal_scope": "Literature published 2015–2024 for the first review; second review assessed carbon footprint literature identified subsequently.",
+      "study_unit": "published studies/papers",
+      "focal_factor": ["alternative protein sources for aquaculture feed"],
+      "comparison": ["Explicit comparison of alternative protein sources and their carbon-footprint performance"],
+      "study_outcome": ["carbon footprint"],
+      "evidence_section": ["Methods", "Results"],
+      "evidence_passage": "The paper states that the first systematic review identified potential alternative protein sources for Atlantic salmon aquaculture and the second assessed the environmental performance of the identified ingredients using carbon footprint as an indicator.",
+      "extraction_confidence": "high",
+      "review_required": false,
+      "fulltext_quality": "good"
+    }
+  ]
+}
