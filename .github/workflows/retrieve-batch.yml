@@ -13,7 +13,7 @@ on:
         default: '10'
 
 jobs:
-  prepare:
+  retrieve:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -22,13 +22,25 @@ jobs:
       - name: Set up R
         uses: r-lib/actions/setup-r@v2
       - name: Install R dependencies
-        run: Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org")'
-      - name: Prepare bounded retrieval batch in R
-        run: Rscript R/retrieve_batch.R ${{ inputs.start }} ${{ inputs.size }}
-      - name: Validate manifest shape in R
-        run: Rscript -e 'x <- jsonlite::read_json(list.files("outputs", pattern="retrieval_batch_.*json", full.names=TRUE)[1]); stopifnot(length(x$records) == as.integer("${{ inputs.size }}")); cat("R manifest valid\n")'
-      - name: Upload retrieval batch manifest
+        run: Rscript -e 'install.packages(c("jsonlite","httr2"), repos="https://cloud.r-project.org")'
+      - name: Run R full-text retrieval
+        run: Rscript R/retrieve_full_texts.R ${{ inputs.start }} ${{ inputs.size }}
+      - name: Validate retrieval outputs
+        run: |
+          Rscript - <<'RS'
+          library(jsonlite)
+          s <- list.files("outputs/retrieval", pattern="retrieval_status_.*json", full.names=TRUE)
+          stopifnot(length(s) == 1)
+          x <- fromJSON(s[[1]], simplifyDataFrame=TRUE)
+          stopifnot(nrow(x$records) == as.integer(Sys.getenv("INPUT_SIZE", unset="10")))
+          cat("Retrieval output structurally valid\n")
+          RS
+        env:
+          INPUT_SIZE: ${{ inputs.size }}
+      - name: Upload retrieval logs and documents
         uses: actions/upload-artifact@v4
         with:
           name: retrieval-batch-${{ inputs.start }}
-          path: outputs/retrieval_batch_*.json
+          path: |
+            outputs/retrieval/**
+            outputs/full_text/**
