@@ -1,14 +1,25 @@
 {
   "dataset": "fulltexttest_master_100_extractions",
-  "version": "1.0",
+  "version": "1.1",
   "total_records": 100,
+  "completed_rows_in_master": 16,
   "records": [
     {"record_number":"104-310-034-385-768","retrieval_status":"obtained","extraction_status":"extracted"},
     {"record_number":"81121","retrieval_status":"obtained","extraction_status":"extracted"},
     {"record_number":"75078","retrieval_status":"obtained","extraction_status":"extracted"},
     {"record_number":"81025","retrieval_status":"obtained","extraction_status":"extracted"},
     {"record_number":"82667","retrieval_status":"obtained","extraction_status":"extracted","new_code_candidate":true},
-    {"record_number":"091-162-729-204-060","retrieval_status":"obtained","extraction_status":"extracted"}
+    {"record_number":"091-162-729-204-060","retrieval_status":"obtained","extraction_status":"extracted"},
+    {"record_number":"72927","title":"Squid as feed for salmonids","doi":"10.1016/0044-8486(87)90154-2","retrieval_status":"located_not_obtained","extraction_status":"blocked","full_text_url":"https://www.sciencedirect.com/science/article/pii/0044848687901542","extraction_basis":"abstract only","review_required":true},
+    {"record_number":"77054","title":"Marine netpen farming leads to infections with some unusual parasites","doi":"10.1016/S0020-7519(00)00018-7","retrieval_status":"located_not_obtained","extraction_status":"blocked","full_text_url":"https://www.sciencedirect.com/science/article/abs/pii/S0020751900000187","extraction_basis":"abstract and indexed introduction only","review_required":true},
+    {"record_number":"82654","title":"Neuroendocrine factors involved in appetite control and feed intake in Atlantic salmon (Salmo salar) reared in Recirculating Aquaculture Systems (RAS)","retrieval_status":"located_not_obtained","extraction_status":"blocked","extraction_basis":"project/report metadata; thesis full text not obtained","review_required":true},
+    {"record_number":"81696","title":"New on the Menu: Genetically Modified Salmon","doi":"10.1001/jama.2015.17339","retrieval_status":"obtained","extraction_status":"extracted","full_text_url":"https://www.researchgate.net/publication/289734672_New_on_the_Menu_Genetically_Modified_Salmon","extraction_basis":"publisher-preview/full-text text reproduced on ResearchGate"},
+    {"record_number":"82603","title":"Microbiological monitoring of an Atlantic salmon recirculating aquaculture system (RAS) – Health and quality assessment","retrieval_status":"located_not_obtained","extraction_status":"blocked","extraction_basis":"title/author publication records; exact full text not located","review_required":true},
+    {"record_number":"79345","title":"Infestation rates of lice Lepeophtheirus salmonis and Caligus elongatus on Atlantic salmon in fixed and towed sentinel cages","doi":"10.3354/dao03748","retrieval_status":"located_not_obtained","extraction_status":"blocked","full_text_url":"https://www.int-res.com/journals/dao/volume?cHash=b44a98778397dcb9c6d8c447796dfd02","extraction_basis":"abstract; ResearchGate reports no full text available","review_required":true},
+    {"record_number":"74229","title":"Deposition and mobilization of lipids varies across the rainbow trout fillet during feed deprivation and transition from plant to fish oil-based diets","doi":"10.1016/j.aquaculture.2018.03.012","retrieval_status":"located_not_obtained","extraction_status":"blocked","full_text_url":"https://www.sciencedirect.com/science/article/abs/pii/S0044848618301327","extraction_basis":"abstract only","review_required":true},
+    {"record_number":"79863","title":"Can variation in standard metabolic rate explain context-dependent performance of farmed Atlantic salmon offspring?","doi":"10.1002/ece3.4716","retrieval_status":"obtained","extraction_status":"extracted","full_text_url":"https://pmc.ncbi.nlm.nih.gov/articles/PMC6342125/","extraction_basis":"open-access full text"},
+    {"record_number":"75078","title":"Effects of selenium-enriched prebiotic on the growth performance, innate immune response, oxidative enzyme activity and microbiome of rainbow trout (Oncorhynchus mykiss)","doi":"10.1016/j.aquaculture.2020.735980","retrieval_status":"obtained","extraction_status":"extracted","full_text_url":"https://repository.library.noaa.gov/view/noaa/41865/noaa_41865_DS1.pdf","extraction_basis":"repository full PDF"},
+    {"record_number":"81839","title":"Early life stress causes persistent impacts on the microbiome of Atlantic salmon","doi":"10.1016/j.cbd.2021.100888","retrieval_status":"obtained","extraction_status":"extracted","full_text_url":"https://pmc.ncbi.nlm.nih.gov/articles/PMC8600188/","extraction_basis":"open-access full text"}
   ],
-  "note": "The canonical schema reserves one row per study. The remaining 94 rows must be populated from the authoritative pilot index before they can be considered part of the completed extraction dataset."
+  "note": "The canonical dataset is 100 studies. This batch populates the verified rows processed so far. The remaining rows remain to be processed; they are not represented as completed. Retrieval status and extraction status are deliberately separate."
 }
