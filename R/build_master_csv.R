@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Build a rectangular 100-row canonical CSV from the authoritative pilot index.
-# Existing extraction data can only be joined by record_number and must never
-# create/delete rows. Unverified rows retain metadata but have no substantive extraction.
+# Existing extraction/retrieval data are preserved by record_number.
+# The build may add rows, but must never delete or invent substantive extraction.
 
 suppressPackageStartupMessages(library(readr))
 
@@ -23,10 +23,11 @@ cols <- c(
 'extraction_source_section','extraction_evidence','audit_status','audit_notes'
 )
 
-master <- data.frame(matrix('', nrow=nrow(idx), ncol=length(cols), dimnames=list(NULL, cols)), stringsAsFactors=FALSE)
-master$record_number <- idx$record_number
-master$title <- idx$title
-master$retrieval_status <- ifelse(tolower(idx$full_text_obtained)=='yes','retrieval_pending','retrieval_pending')
+empty <- function(n) data.frame(matrix('', nrow=n, ncol=length(cols), dimnames=list(NULL, cols)), stringsAsFactors=FALSE)
+master <- empty(nrow(idx))
+master$record_number <- as.character(idx$record_number)
+master$title <- as.character(idx$title)
+master$retrieval_status <- 'retrieval_pending'
 master$extraction_status <- 'not_started'
 master$full_text_verified <- 'false'
 master$review_required <- 'false'
@@ -34,7 +35,31 @@ master$new_code_candidate <- 'false'
 master$audit_status <- 'source_indexed'
 master$audit_notes <- 'Row retained from authoritative 100-record index; substantive extraction requires verified full text.'
 
+# Preserve every non-empty value already present in the canonical master.
+if (file.exists(out_path)) {
+  old <- tryCatch(read_csv(out_path, show_col_types=FALSE), error=function(e) NULL)
+  if (!is.null(old) && 'record_number' %in% names(old) && !anyDuplicated(old$record_number)) {
+    common <- intersect(cols, names(old))
+    old <- as.data.frame(old, stringsAsFactors=FALSE)
+    for (i in seq_len(nrow(master))) {
+      j <- match(master$record_number[i], as.character(old$record_number))
+      if (!is.na(j)) {
+        for (nm in setdiff(common, c('record_number','title'))) {
+          v <- old[[nm]][j]
+          if (!is.na(v) && nzchar(trimws(as.character(v)))) master[[nm]][i] <- as.character(v)
+        }
+        if (nzchar(trimws(as.character(old$title[j])))) master$title[i] <- as.character(old$title[j])
+      }
+    }
+  }
+}
+
+# Pilot-index metadata may safely fill blank DOI/status fields, but cannot overwrite extraction.
+if ('doi' %in% names(idx)) {
+  for (i in seq_len(nrow(master))) if (!nzchar(master$doi[i]) && !is.na(idx$doi[i])) master$doi[i] <- as.character(idx$doi[i])
+}
+
 write_csv(master, out_path, na='')
 check <- read_csv(out_path, show_col_types=FALSE)
 stopifnot(nrow(check)==100, ncol(check)==45, !anyDuplicated(check$record_number))
-cat(sprintf('Built canonical master CSV: %d rows x %d columns\n', nrow(check), ncol(check)))
+cat(sprintf('Built canonical master CSV: %d rows x %d columns; preserved existing extraction values.\n', nrow(check), ncol(check)))
