@@ -1,0 +1,16 @@
+{
+  "audit_date":"2026-08-18",
+  "master_rows_reviewed":16,
+  "unique_record_numbers_reviewed":15,
+  "rule":"Substantive extraction is valid only when usable full text was actually obtained and verified.",
+  "verified_full_text_unique_records":["104-310-034-385-768","81121","75078","81025","82667","091-162-729-204-060","79863","81839"],
+  "invalid_or_unverified_extractions_to_clear":["72927","77054","82654","81696","82603","79345","74229"],
+  "duplicate_record_in_current_master":["75078"],
+  "findings":{
+    "records_with_verified_full_text":8,
+    "records_without_verified_full_text":7,
+    "records_with_extraction_fields_but_no_verified_full_text":7,
+    "duplicate_rows":1
+  },
+  "action_required":"The seven unsupported extraction rows must have substantive study-content fields cleared in the canonical master. The duplicate 75078 row must be collapsed to one row. Retrieval/audit metadata may be retained."
+}
