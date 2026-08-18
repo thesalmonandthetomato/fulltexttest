@@ -24,11 +24,14 @@ jobs:
         with:
           r-version: '4.4'
 
-      - name: Install system PDF parser
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils libcurl4-openssl-dev libssl-dev libxml2-dev
 
       - name: Install R packages
-        run: Rscript -e "install.packages(c('readr','httr2','jsonlite'), repos='https://cloud.r-project.org')"
+        run: |
+          Rscript -e "install.packages(c('readr','httr2','jsonlite'), repos='https://cloud.r-project.org', dependencies=TRUE)"
 
       - name: Parse-check retrieval code
         run: |
@@ -46,6 +49,7 @@ jobs:
         env:
           RECORD_IDS: ${{ inputs.record_ids }}
         run: |
+          mkdir -p outputs/retrieval
           printf 'run_id,commit_sha,record_ids\n%s,%s,"%s"\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$RECORD_IDS" > outputs/retrieval/run_manifest.csv
 
       - name: Upload retrieval artefacts
