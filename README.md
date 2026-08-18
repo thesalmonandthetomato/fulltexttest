@@ -1,25 +1,23 @@
-# Living Evidence Map Full-Text Extraction
+# Full-text extraction pipeline
 
-This repository is for the one-time full-text extraction pilot on the included salmon aquaculture evidence base.
+This repository is the auditable, reproducible working environment for the 100-record full-text retrieval and structured extraction pilot.
 
-## Purpose
+## Architecture
 
-Develop and validate controlled ontologies and a reproducible full-text extraction pipeline before scaling to the full corpus.
+- `data/` — canonical CSV/JSON data only.
+- `scripts/` — executable pipeline code; scripts must be deterministic and non-destructive by default.
+- `R/` — R analysis/validation functions.
+- `docs/` — ontology, protocol, schema, retrieval and extraction documentation.
+- `outputs/` — generated reports, validation results and run summaries. Outputs are never treated as authoritative input data.
+- `.github/workflows/` — GitHub Actions used to validate and run pipeline activities.
+- `archive/` — superseded artefacts retained for provenance, not for current analysis.
 
-## Extraction principle
+## Core rule
 
-The primary evidence source for study-characteristic extraction is the **Methods**, followed by **Results**. Introduction, Discussion and References are not primary evidence for study characteristics and should be used only where explicitly justified for corroboration or interpretation.
+The canonical dataset is one 100-row study table represented in both CSV and JSON. A row is retained whether or not full text is obtainable. Substantive extraction is permitted only when `full_text_verified=true`. Failed retrieval never becomes an inferred extraction.
 
-Every extracted field should, where possible, retain supporting text evidence and an extraction-confidence/uncertainty flag.
+## Reproducibility
 
-## Pilot
+Every pipeline run must record commit SHA, run ID, input file hashes, script/version information, retrieval status, extraction status, validation results, and generated output paths.
 
-Initial pilot target: the first 100 sampled records, with approximately 73 currently having an accessible full-text document from the retrieval tests.
-
-## Planned stages
-
-1. Finalise extraction ontology and coding rules.
-2. Build and validate text retrieval and section extraction.
-3. Run a 100-record pilot on obtainable full texts.
-4. Manually audit a sample of outputs and revise the ontology/rules.
-5. Scale the validated pipeline to the full included corpus.
+GitHub Actions should fail rather than silently repair malformed data. Any transformation of canonical data must be explicit, reviewable and validated before commit.
