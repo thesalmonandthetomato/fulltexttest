@@ -1,11 +1,19 @@
 name: Retrieve full-text pilot
 
 on:
+  push:
+    paths:
+      - '.github/pilot.trigger'
+      - '.github/workflows/retrieve-pilot.yml'
+      - 'R/**'
+      - 'scripts/**'
+      - 'data/living_evidence_map_master.csv'
   workflow_dispatch:
     inputs:
       record_ids:
-        description: Comma-separated record_id values from the master dataset
-        required: true
+        description: Comma-separated record_id values from the master dataset; leave blank for the deterministic three-record pilot
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -14,7 +22,7 @@ permissions:
 jobs:
   retrieve:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout exact commit
         uses: actions/checkout@v4
@@ -58,20 +66,29 @@ jobs:
           set -euo pipefail
           Rscript -e "source('R/check_dataset.R'); check_dataset('data/living_evidence_map_master.csv')"
 
-      - name: Retrieve requested records
+      - name: Resolve pilot selection
         env:
-          RECORD_IDS: ${{ inputs.record_ids }}
+          INPUT_RECORD_IDS: ${{ inputs.record_ids }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_RECORD_IDS" ]; then
+            echo "RECORD_IDS=$INPUT_RECORD_IDS" >> "$GITHUB_ENV"
+            echo "SELECTION_MODE=explicit_record_ids" >> "$GITHUB_ENV"
+          else
+            echo "RECORD_IDS=__FIRST3__" >> "$GITHUB_ENV"
+            echo "SELECTION_MODE=deterministic_first_three_eligible" >> "$GITHUB_ENV"
+          fi
+
+      - name: Retrieve pilot records
         run: |
           set -euo pipefail
           Rscript scripts/run_retrieval.R "$RECORD_IDS"
 
       - name: Write run manifest
-        env:
-          RECORD_IDS: ${{ inputs.record_ids }}
         run: |
           set -euo pipefail
           mkdir -p outputs/retrieval
-          printf 'run_id,commit_sha,record_ids\n%s,%s,"%s"\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$RECORD_IDS" > outputs/retrieval/run_manifest.csv
+          printf 'run_id,commit_sha,selection_mode,selection_argument\n%s,%s,%s,"%s"\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$SELECTION_MODE" "$RECORD_IDS" > outputs/retrieval/run_manifest.csv
 
       - name: Upload retrieval artefacts
         uses: actions/upload-artifact@v4
