@@ -16,7 +16,29 @@ is_pdf<-function(ct,b)grepl('pdf',tolower(ct))||(length(b)>=4&&identical(rawToCh
 is_doc<-function(ct,b)is_pdf(ct,b)||grepl('html|xml|text',tolower(ct))
 row_attempt<-function(id,route,url,res,candidate='',note='')data.frame(record_number=id,route=route,url=url,status=res$status,content_type=res$content_type,usable_full_text=isTRUE(res$ok&&is_doc(res$content_type,res$bytes)),candidate_url=candidate,note=note,error=res$error,stringsAsFactors=FALSE)
 # Only accept explicit URL fields; never use $ on arbitrary JSON elements.
-urls_from_json<-function(j, fields=c('pdf_url','url_for_pdf','landing_page_url','url')){out<-character();walk<-function(x){if(is.null(x))return();if(is.list(x)){nm<-names(x);if(!is.null(nm)){hit<-intersect(fields,nm);for(k in hit){v<-x[[k]];if(is.character(v))out<<-c(out,v);else if(is.list(v))walk(v)}};for(z in unname(x))walk(z)};else if(is.character(x)&&length(x)==1L&&grepl('^https?://',x))out<<-c(out,x)};walk(j);unique(out[!is.na(out)&nzchar(out)&grepl('^https?://',out)])}
+urls_from_json<-function(j,fields=c('pdf_url','url_for_pdf','landing_page_url','url')){
+  out<-character()
+  walk<-function(x){
+    if(is.null(x)) return(invisible(NULL))
+    if(is.list(x)){
+      nm<-names(x)
+      if(!is.null(nm)){
+        hit<-intersect(fields,nm)
+        for(k in hit){
+          v<-x[[k]]
+          if(is.character(v)) out<<-c(out,v)
+          if(is.list(v)) walk(v)
+        }
+      }
+      for(z in unname(x)) walk(z)
+    } else if(is.character(x) && length(x)==1L && grepl('^https?://',x)) {
+      out<<-c(out,x)
+    }
+    invisible(NULL)
+  }
+  walk(j)
+  unique(out[!is.na(out)&nzchar(out)&grepl('^https?://',out)])
+}
 attempts_all<-list();status_all<-list()
 for(i in seq_len(nrow(b))){r<-b[i,];id<-as.character(r$record_number);title<-as.character(r$title);doi<-if('doi'%in%names(r))trimws(as.character(r$doi))else'';if(is.na(doi))doi<-'';a<-list();saved<-FALSE;vurl<-'';log<-function(route,u,res,candidate='',note='')a[[length(a)+1L]]<<-row_attempt(id,route,u,res,candidate,note)
 if('full_text_url'%in%names(r)&&!is.na(r$full_text_url)&&nzchar(trimws(as.character(r$full_text_url)))){u<-as.character(r$full_text_url);z<-safe_get(u);log('existing_canonical_url',u,z,u);if(z$ok&&is_doc(z$content_type,z$bytes)){saved<-TRUE;vurl<-u}}
