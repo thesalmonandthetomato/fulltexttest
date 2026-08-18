@@ -1,0 +1,14 @@
+{
+  "dataset": "fulltexttest_master_100_extractions",
+  "version": "1.0",
+  "total_records": 100,
+  "records": [
+    {"record_number":"104-310-034-385-768","retrieval_status":"obtained","extraction_status":"extracted"},
+    {"record_number":"81121","retrieval_status":"obtained","extraction_status":"extracted"},
+    {"record_number":"75078","retrieval_status":"obtained","extraction_status":"extracted"},
+    {"record_number":"81025","retrieval_status":"obtained","extraction_status":"extracted"},
+    {"record_number":"82667","retrieval_status":"obtained","extraction_status":"extracted","new_code_candidate":true},
+    {"record_number":"091-162-729-204-060","retrieval_status":"obtained","extraction_status":"extracted"}
+  ],
+  "note": "The canonical schema reserves one row per study. The remaining 94 rows must be populated from the authoritative pilot index before they can be considered part of the completed extraction dataset."
+}
