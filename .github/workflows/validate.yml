@@ -1,0 +1,38 @@
+name: Validate extraction data
+
+on:
+  push:
+    paths:
+      - 'data/**'
+      - 'scripts/**'
+      - 'R/**'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'data/**'
+      - 'scripts/**'
+      - 'R/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate canonical data
+        run: python scripts/validate_master.py
+
+      - name: Write audit manifest
+        shell: bash
+        run: |
+          mkdir -p outputs
+          printf 'commit_sha,run_id,ref\n%s,%s,%s\n' "${GITHUB_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_REF}" > outputs/validation_run.csv
+
+      - name: Upload validation manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-manifest
+          path: outputs/validation_run.csv
