@@ -26,29 +26,50 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y poppler-utils libcurl4-openssl-dev libssl-dev libxml2-dev
+          sudo apt-get install -y \
+            poppler-utils \
+            libcurl4-openssl-dev \
+            libssl-dev \
+            libxml2-dev \
+            pkg-config
+
+      - name: Verify system dependencies
+        run: |
+          set -euo pipefail
+          command -v pdftotext
+          command -v pkg-config
+          pkg-config --exists libcurl
 
       - name: Install R packages
         run: |
+          set -euo pipefail
           Rscript -e "install.packages(c('readr','httr2','jsonlite'), repos='https://cloud.r-project.org', dependencies=TRUE)"
+          Rscript -e "stopifnot(requireNamespace('readr', quietly=TRUE), requireNamespace('httr2', quietly=TRUE), requireNamespace('jsonlite', quietly=TRUE))"
 
       - name: Parse-check retrieval code
         run: |
+          set -euo pipefail
           Rscript -e "files <- c('R/check_dataset.R','R/retrieval.R','scripts/run_retrieval.R'); for (f in files) parse(f)"
 
       - name: Validate master dataset
-        run: Rscript -e "source('R/check_dataset.R'); check_dataset('data/living_evidence_map_master.csv')"
+        run: |
+          set -euo pipefail
+          Rscript -e "source('R/check_dataset.R'); check_dataset('data/living_evidence_map_master.csv')"
 
       - name: Retrieve requested records
         env:
           RECORD_IDS: ${{ inputs.record_ids }}
-        run: Rscript scripts/run_retrieval.R "$RECORD_IDS"
+        run: |
+          set -euo pipefail
+          Rscript scripts/run_retrieval.R "$RECORD_IDS"
 
       - name: Write run manifest
         env:
           RECORD_IDS: ${{ inputs.record_ids }}
         run: |
+          set -euo pipefail
           mkdir -p outputs/retrieval
           printf 'run_id,commit_sha,record_ids\n%s,%s,"%s"\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$RECORD_IDS" > outputs/retrieval/run_manifest.csv
 
