@@ -21,7 +21,9 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The 13k+ reference CSV is ~60 MB and cold R package installation can exceed 10 minutes.
+    # Keep a finite bound, but allow enough time for a clean runner to complete validation.
+    timeout-minutes: 30
     steps:
       - name: Checkout exact commit
         uses: actions/checkout@v4
