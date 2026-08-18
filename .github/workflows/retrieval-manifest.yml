@@ -1,34 +1,47 @@
-name: Retrieval manifest
+name: Auditable R full-text retrieval
 
 on:
   workflow_dispatch:
+    inputs:
+      start:
+        description: '1-based record start'
+        required: true
+        default: '1'
+      size:
+        description: 'Batch size'
+        required: true
+        default: '10'
   push:
     paths:
       - 'data/pilot_index_100.csv'
-      - 'scripts/retrieval_manifest.py'
+      - 'data/master_100_extractions.csv'
+      - 'R/retrieve_full_texts.R'
       - '.github/workflows/retrieval-manifest.yml'
 
 jobs:
-  manifest:
+  retrieve:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Generate retrieval manifest
-        run: python scripts/retrieval_manifest.py
-      - name: Validate manifest shape
-        run: python - <<'PY'
-import json
-p='outputs/retrieval_manifest.json'
-d=json.load(open(p))
-assert d['record_count']==100, d['record_count']
-assert len(d['records'])==100
-assert len({r['record_number'] for r in d['records']})==100
-print('Retrieval manifest valid: 100 unique records')
-PY
-      - name: Upload manifest
+      - uses: r-lib/actions/setup-r@v2
+      - name: Install R dependencies
+        run: Rscript -e 'install.packages(c("jsonlite","httr2"), repos="https://cloud.r-project.org")'
+      - name: Retrieve full texts
+        env:
+          START: ${{ inputs.start || '1' }}
+          SIZE: ${{ inputs.size || '10' }}
+        run: Rscript R/retrieve_full_texts.R "$START" "$SIZE"
+      - name: Validate retrieval outputs
+        run: |
+          Rscript -e 'x <- read.csv(sprintf("outputs/retrieval/batch_%03d_%03d_status.csv", as.integer(Sys.getenv("START")), as.integer(Sys.getenv("START"))+as.integer(Sys.getenv("SIZE"))-1), check.names=FALSE); stopifnot(nrow(x)==as.integer(Sys.getenv("SIZE"))); stopifnot(all(x$record_number != "")); cat("Retrieval status shape valid\n")'
+      - name: Upload retrieval audit and ephemeral full texts
         uses: actions/upload-artifact@v4
         with:
-          name: retrieval-manifest
-          path: outputs/retrieval_manifest.json
+          name: retrieval-batch-${{ inputs.start || '1' }}-${{ inputs.size || '10' }}
+          path: |
+            outputs/retrieval/*.csv
+            outputs/retrieval/*.json
+            outputs/full_text/*
+          retention-days: 30
