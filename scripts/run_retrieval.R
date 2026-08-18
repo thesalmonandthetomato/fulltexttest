@@ -1,9 +1,6 @@
 #!/usr/bin/env Rscript
 args <- commandArgs(trailingOnly=TRUE)
 ids_arg <- if (length(args) >= 1L) args[[1L]] else ''
-if (!nzchar(ids_arg)) stop('Provide comma-separated record IDs')
-ids <- unique(trimws(strsplit(ids_arg, ',', fixed=TRUE)[[1L]]))
-ids <- ids[nzchar(ids)]
 
 suppressPackageStartupMessages({library(readr); library(httr2); library(jsonlite)})
 source('R/check_dataset.R')
@@ -11,6 +8,25 @@ source('R/retrieval.R')
 
 path <- 'data/living_evidence_map_master.csv'
 records <- check_dataset(path)
+
+# A deterministic pilot selector used only by the auditable pilot workflow.
+# It selects the first three records, in source-file order, that have a
+# non-empty record_id and at least one locator (DOI or URL). Manual runs can
+# continue to provide explicit comma-separated record IDs.
+if (identical(ids_arg, '__FIRST3__')) {
+  eligible <- !is.na(records$record_id) & nzchar(trimws(as.character(records$record_id))) &
+    ((!is.na(records$doi) & nzchar(trimws(as.character(records$doi)))) |
+       (!is.na(records$url_raw) & nzchar(trimws(as.character(records$url_raw)))))
+  ids <- unique(as.character(records$record_id[eligible]))[seq_len(min(3L, sum(eligible)))]
+  if (length(ids) < 3L) stop('Fewer than three eligible records are available for the pilot')
+  selection_mode <- 'deterministic_first_three_eligible'
+} else {
+  if (!nzchar(ids_arg)) stop('Provide comma-separated record IDs or __FIRST3__')
+  ids <- unique(trimws(strsplit(ids_arg, ',', fixed=TRUE)[[1L]]))
+  ids <- ids[nzchar(ids)]
+  selection_mode <- 'explicit_record_ids'
+}
+
 sel <- records[as.character(records$record_id) %in% ids, , drop=FALSE]
 missing <- setdiff(ids, as.character(sel$record_id))
 if (length(missing)) stop('Requested record IDs not found: ', paste(missing, collapse=', '))
@@ -44,5 +60,7 @@ for (i in seq_len(nrow(sel))) {
 attempts <- do.call(rbind, all_attempts); status <- do.call(rbind, all_status)
 write_csv(attempts, 'outputs/retrieval/attempts.csv')
 write_csv(status, 'outputs/retrieval/status.csv')
-write_json(list(record_ids=ids, status=status), 'outputs/retrieval/status.json', auto_unbox=TRUE, pretty=TRUE)
+write_json(list(record_ids=ids, selection_mode=selection_mode, status=status), 'outputs/retrieval/status.json', auto_unbox=TRUE, pretty=TRUE)
+cat('Selection mode: ', selection_mode, '\n', sep='')
+cat('Record IDs: ', paste(ids, collapse=', '), '\n', sep='')
 cat('Retrieved ', sum(status$full_text_status == 'verified_complete'), ' complete full texts; ', sum(status$full_text_status != 'verified_complete'), ' not verified.\n', sep='')
