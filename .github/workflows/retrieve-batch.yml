@@ -19,8 +19,14 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare bounded retrieval batch
-        run: python scripts/retrieve_batch.py ${{ inputs.start }} ${{ inputs.size }}
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+      - name: Install R dependencies
+        run: Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org")'
+      - name: Prepare bounded retrieval batch in R
+        run: Rscript R/retrieve_batch.R ${{ inputs.start }} ${{ inputs.size }}
+      - name: Validate manifest shape in R
+        run: Rscript -e 'x <- jsonlite::read_json(list.files("outputs", pattern="retrieval_batch_.*json", full.names=TRUE)[1]); stopifnot(length(x$records) == as.integer("${{ inputs.size }}")); cat("R manifest valid\n")'
       - name: Upload retrieval batch manifest
         uses: actions/upload-artifact@v4
         with:
