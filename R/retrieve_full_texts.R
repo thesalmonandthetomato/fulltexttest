@@ -8,26 +8,91 @@ write_csv_base <- function(x,path) utils::write.csv(x,path,row.names=FALSE,na=''
 idx <- read_csv_base('data/pilot_index_100.csv')
 stopifnot(nrow(idx)==100, start>=1L, size>=1L, start+size-1L<=100L)
 b <- idx[start:(start+size-1L),,drop=FALSE]
-if(file.exists('data/master_100_extractions.csv')) { m <- tryCatch(read_csv_base('data/master_100_extractions.csv'),error=function(e)NULL); if(!is.null(m)&&'record_number'%in%names(m)){mi<-match(as.character(b$record_number),as.character(m$record_number));for(nm in c('doi','full_text_url'))if(nm%in%names(m)){if(!nm%in%names(b))b[[nm]]<-'';v<-m[[nm]][mi];ok<-!is.na(v)&nzchar(trimws(as.character(v)));b[[nm]][ok]<-as.character(v[ok])}}}
-dir.create('outputs/retrieval',recursive=TRUE,showWarnings=FALSE);dir.create('outputs/full_text',recursive=TRUE,showWarnings=FALSE)
+if(file.exists('data/master_100_extractions.csv')) {
+  m <- tryCatch(read_csv_base('data/master_100_extractions.csv'), error=function(e)NULL)
+  if(!is.null(m) && 'record_number' %in% names(m)) {
+    mi <- match(as.character(b$record_number), as.character(m$record_number))
+    for(nm in c('doi','full_text_url')) if(nm %in% names(m)) {
+      if(!nm %in% names(b)) b[[nm]] <- ''
+      v <- m[[nm]][mi]
+      ok <- !is.na(v) & nzchar(trimws(as.character(v)))
+      b[[nm]][ok] <- as.character(v[ok])
+    }
+  }
+}
+dir.create('outputs/retrieval',recursive=TRUE,showWarnings=FALSE)
+dir.create('outputs/full_text',recursive=TRUE,showWarnings=FALSE)
 `%||%` <- function(x,y) if(is.null(x)||length(x)==0||all(is.na(x))) y else x
-safe_get <- function(url,accept='*/*') tryCatch({r<-request(url)|>req_headers(Accept=accept)|>req_user_agent('fulltexttest/1.0 reproducible research retrieval')|>req_timeout(15)|>req_perform();list(ok=resp_status(r)>=200&&resp_status(r)<300,status=resp_status(r),content_type=resp_headers(r)[['content-type']]%||%'',bytes=resp_body_raw(r),error='')},error=function(e)list(ok=FALSE,status=NA,content_type='',bytes=raw(),error=conditionMessage(e)))
-text_from_pdf <- function(bytes){if(length(bytes)<4||!identical(rawToChar(bytes[1:4]),'%PDF'))return('');tf<-tempfile(fileext='.pdf');writeBin(bytes,tf);z<-tryCatch(system2('pdftotext',c('-layout',shQuote(tf),'-'),stdout=TRUE,stderr=FALSE),error=function(e)character());paste(z,collapse='\n')}
-validate_pdf <- function(bytes){tx<-text_from_pdf(bytes);low<-tolower(tx);has_refs<-grepl('(^|\n)\\s*(references|bibliography|literature cited)\\s*($|:)',low,perl=TRUE);ref_count<-length(unlist(regmatches(tx,gregexpr('(?m)\\n\\s*\\[?[0-9]{1,4}\\]?\\.?\\s+',tx,perl=TRUE))));list(ok=length(tx)>=3000&&has_refs&&ref_count>=3,refs=has_refs&&ref_count>=3,bytes=length(bytes),text_chars=nchar(tx),note=sprintf('PDF text=%d chars; references_section=%s; reference_like_entries=%d',nchar(tx),has_refs,ref_count))}
-strip_html <- function(x){gsub('\\s+',' ',gsub('<[^>]+>',' ',x))}
-validate_markup <- function(bytes,ct){tx<-tryCatch(rawToChar(bytes),error=function(e)'');low<-tolower(tx);body<-strip_html(tx);has_refs<-grepl('(references|bibliography|literature cited)',low);ref_count<-length(unlist(regmatches(body,gregexpr('(?m)(references|bibliography).*?([0-9]{1,4}\\.|\\[[0-9]{1,4}\\])',low,perl=TRUE))));list(ok=nchar(body)>=5000&&has_refs&&ref_count>=3,refs=has_refs&&ref_count>=3,bytes=length(bytes),text_chars=nchar(body),note=sprintf('%s text=%d chars; references_marker=%s; reference_like_matches=%d',ct,nchar(body),has_refs,ref_count))}
-validate_doc <- function(ct,bytes){if(grepl('pdf',tolower(ct))|| (length(bytes)>=4&&identical(rawToChar(bytes[1:4]),'%PDF')))return(c(format='pdf',validate_pdf(bytes)));if(grepl('html|xml',tolower(ct)))return(c(format=if(grepl('xml',tolower(ct)))'xml'else'html',validate_markup(bytes,ct)));list(ok=FALSE,refs=FALSE,format='',bytes=length(bytes),text_chars=0,note='Not PDF/HTML/XML')}
+safe_get <- function(url,accept='*/*') tryCatch({
+  r <- request(url) |> req_headers(Accept=accept) |> req_user_agent('fulltexttest/1.0 reproducible research retrieval') |> req_timeout(15) |> req_perform()
+  list(ok=resp_status(r)>=200&&resp_status(r)<300,status=resp_status(r),content_type=resp_headers(r)[['content-type']]%||%'',bytes=resp_body_raw(r),error='')
+},error=function(e)list(ok=FALSE,status=NA,content_type='',bytes=raw(),error=conditionMessage(e)))
+text_from_pdf <- function(bytes){
+  if(length(bytes)<4 || !identical(rawToChar(bytes[1:4]),'%PDF')) return('')
+  tf <- tempfile(fileext='.pdf'); writeBin(bytes,tf)
+  z <- tryCatch(system2('pdftotext',c('-layout',shQuote(tf),'-'),stdout=TRUE,stderr=FALSE),error=function(e)character())
+  paste(z,collapse='\n')
+}
+validate_pdf <- function(bytes){
+  tx <- text_from_pdf(bytes); low <- tolower(tx)
+  has_refs <- grepl('(^|\n)\\s*(references|bibliography|literature cited)\\s*($|:)',low,perl=TRUE)
+  ref_count <- length(unlist(regmatches(tx,gregexpr('(?m)\\n\\s*\\[?[0-9]{1,4}\\]?\\.?\\s+',tx,perl=TRUE))))
+  list(ok=nchar(tx)>=3000 && has_refs && ref_count>=3, refs=has_refs&&ref_count>=3, bytes=length(bytes), text_chars=nchar(tx), note=sprintf('PDF text=%d chars; references_section=%s; reference_like_entries=%d',nchar(tx),has_refs,ref_count))
+}
+strip_html <- function(x) gsub('\\s+',' ',gsub('<[^>]+>',' ',x))
+validate_markup <- function(bytes,ct){
+  tx <- tryCatch(rawToChar(bytes),error=function(e)''); low <- tolower(tx); body <- strip_html(tx)
+  has_refs <- grepl('(references|bibliography|literature cited)',low)
+  ref_count <- length(unlist(regmatches(body,gregexpr('(?m)(references|bibliography).*?([0-9]{1,4}\\.|\\[[0-9]{1,4}\\])',low,perl=TRUE))))
+  list(ok=nchar(body)>=5000 && has_refs && ref_count>=3, refs=has_refs&&ref_count>=3, bytes=length(bytes), text_chars=nchar(body), note=sprintf('%s text=%d chars; references_marker=%s; reference_like_matches=%d',ct,nchar(body),has_refs,ref_count))
+}
+validate_doc <- function(ct,bytes){
+  if(grepl('pdf',tolower(ct)) || (length(bytes)>=4 && identical(rawToChar(bytes[1:4]),'%PDF'))) return(c(format='pdf',validate_pdf(bytes)))
+  if(grepl('html|xml',tolower(ct))) return(c(format=if(grepl('xml',tolower(ct)))'xml'else'html',validate_markup(bytes,ct)))
+  list(ok=FALSE,refs=FALSE,format='',bytes=length(bytes),text_chars=0,note='Not PDF/HTML/XML')
+}
 row_attempt <- function(id,route,url,res,candidate='') data.frame(record_number=id,route=route,url=url,status=res$status,content_type=res$content_type,usable_full_text=isTRUE(res$ok&&validate_doc(res$content_type,res$bytes)$ok),candidate_url=candidate,error=res$error,stringsAsFactors=FALSE)
-urls_from_json <- function(j,fields=c('pdf_url','url_for_pdf','landing_page_url','url')){out<-character();walk<-function(x){if(is.null(x))return();if(is.list(x)){nm<-names(x);if(!is.null(nm))for(k in intersect(fields,nm)){v<-x[[k]];if(is.character(v))out<<-c(out,v);if(is.list(v))walk(v)};for(z in unname(x))walk(z)}else if(is.character(x)&&length(x)==1L&&grepl('^https?://',x))out<<-c(out,x)};walk(j);unique(out[!is.na(out)&nzchar(out)&grepl('^https?://',out)])}
-attempts_all<-list();status_all<-list()
-for(i in seq_len(nrow(b))){r<-b[i,];id<-as.character(r$record_number);title<-as.character(r$title);doi<-if('doi'%in%names(r))trimws(as.character(r$doi))else'';if(is.na(doi))doi<-'';a<-list();saved<-FALSE;vurl<-'';vinfo<-NULL;log<-function(route,u,res,candidate=''){a[[length(a)+1L]]<<-row_attempt(id,route,u,res,candidate)}
-if('full_text_url'%in%names(r)&&!is.na(r$full_text_url)&&nzchar(trimws(as.character(r$full_text_url)))){u<-as.character(r$full_text_url);z<-safe_get(u);log('existing_canonical_url',u,z,u);vv<-validate_doc(z$content_type,z$bytes);if(z$ok&&isTRUE(vv$ok)){saved<-TRUE;vurl<-u;vinfo<-vv}}
-if(!nzchar(doi)){u<-paste0('https://api.crossref.org/works?query.title=',URLencode(title,reserved=TRUE),'&rows=3');z<-safe_get(u,'application/json');log('crossref_title_discovery',u,z);if(z$ok){j<-tryCatch(fromJSON(rawToChar(z$bytes),simplifyVector=FALSE),error=function(e)NULL);it<-tryCatch(j$message$items,error=function(e)NULL);if(is.list(it)&&length(it)){d<-it[[1]]$DOI;if(is.character(d)&&length(d))doi<-d}}}
-if(nzchar(doi)&&!saved){u<-paste0('https://doi.org/',doi);z<-safe_get(u);log('doi_publisher',u,z);vv<-validate_doc(z$content_type,z$bytes);if(z$ok&&isTRUE(vv$ok)){saved<-TRUE;vurl<-u;vinfo<-vv}}
-if(nzchar(doi)&&!saved){u<-paste0('https://api.unpaywall.org/v2/',URLencode(doi,reserved=TRUE),'?email=research@example.org');z<-safe_get(u,'application/json');log('unpaywall_discovery',u,z);if(z$ok){j<-tryCatch(fromJSON(rawToChar(z$bytes),simplifyVector=FALSE),error=function(e)NULL);for(cu in urls_from_json(j,c('url_for_pdf','url')))if(!saved){q<-safe_get(cu);vv<-validate_doc(q$content_type,q$bytes);log('unpaywall_full_text',cu,q,cu);if(q$ok&&isTRUE(vv$ok)){saved<-TRUE;vurl<-cu;vinfo<-vv}}}}
-if(nzchar(doi)&&!saved){u<-paste0('https://api.openalex.org/works/https://doi.org/',URLencode(doi,reserved=TRUE));z<-safe_get(u,'application/json');log('openalex_discovery',u,z);if(z$ok){j<-tryCatch(fromJSON(rawToChar(z$bytes),simplifyVector=FALSE),error=function(e)NULL);for(cu in urls_from_json(j,c('pdf_url','landing_page_url')))if(!saved){q<-safe_get(cu);vv<-validate_doc(q$content_type,q$bytes);log('openalex_full_text',cu,q,cu);if(q$ok&&isTRUE(vv$ok)){saved<-TRUE;vurl<-cu;vinfo<-vv}}}}
-qstr<-if(nzchar(doi))paste0('DOI:',doi)else paste0('TITLE:',title);u<-paste0('https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=',URLencode(qstr,reserved=TRUE),'&format=json&pageSize=5');z<-safe_get(u,'application/json');log('europepmc_discovery',u,z);if(z$ok&&!saved){j<-tryCatch(fromJSON(rawToChar(z$bytes),simplifyVector=FALSE),error=function(e)NULL);rs<-tryCatch(j$resultList$result,error=function(e)NULL);if(is.list(rs))for(x in rs)if(is.list(x)&&!is.null(x$pmcid)&&is.character(x$pmcid)&&length(x$pmcid)&&nzchar(x$pmcid)&&!saved){cu<-paste0('https://www.ebi.ac.uk/europepmc/webservices/rest/',x$pmcid,'/fullTextXML');q2<-safe_get(cu,'application/xml');vv<-validate_doc(q2$content_type,q2$bytes);log('europepmc_full_text',cu,q2,cu);if(q2$ok&&isTRUE(vv$ok)){saved<-TRUE;vurl<-cu;vinfo<-vv}}}
-if(!saved){u<-paste0('https://scholar.google.com/scholar?hl=en&q=',URLencode(paste0('"',title,'"'),reserved=TRUE));q2<-safe_get(u,'text/html');log('google_scholar_title_search',u,q2)}
-if(saved){q<-safe_get(vurl);vv<-validate_doc(q$content_type,q$bytes);log('verified_document_download',vurl,q,vurl);if(q$ok&&isTRUE(vv$ok)){ext<-if(vv$format=='pdf')'.pdf'else if(vv$format=='xml')'.xml'else'.html';writeBin(q$bytes,file.path('outputs/full_text',paste0(gsub('[^A-Za-z0-9._-]','_',id),ext)));vinfo<-vv}else{saved<-FALSE;vurl<-'';vinfo<-NULL}}
-status_all[[length(status_all)+1L]]<-data.frame(record_number=id,title=title,doi=doi,retrieval_status=if(saved)'obtained'else'unobtainable',full_text_verified=saved,references_verified=if(saved)isTRUE(vinfo$refs)elseFALSE,document_format=if(saved)as.character(vinfo$format)else'',full_text_bytes=if(saved)as.integer(vinfo$bytes)else 0L,content_validation=if(saved)as.character(vinfo$note)else'',full_text_url=vurl,extraction_status=if(saved)'pending_extraction'else'not_started',stringsAsFactors=FALSE);attempts_all[[length(attempts_all)+1L]]<-do.call(rbind,a)}
-at<-do.call(rbind,attempts_all);st<-do.call(rbind,status_all);p<-sprintf('outputs/retrieval/batch_%03d_%03d',start,start+nrow(b)-1L);write_csv_base(at,paste0(p,'_attempts.csv'));write_csv_base(st,paste0(p,'_status.csv'));write_json(list(batch_start=start,batch_end=start+nrow(b)-1L,records=st),paste0(p,'_status.json'),auto_unbox=TRUE,pretty=TRUE);cat(sprintf('Completed retrieval batch %d-%d: %d complete full texts, %d unobtainable\n',start,start+nrow(b)-1L,sum(st$full_text_verified),sum(!st$full_text_verified)))
+urls_from_json <- function(j,fields=c('pdf_url','url_for_pdf','landing_page_url','url')){
+  out <- character()
+  walk <- function(x){
+    if(is.null(x)) return(invisible(NULL))
+    if(is.list(x)){
+      nm <- names(x)
+      if(!is.null(nm)) for(k in intersect(fields,nm)){
+        v <- x[[k]]
+        if(is.character(v)) out <<- c(out,v)
+        if(is.list(v)) walk(v)
+      }
+      for(z in unname(x)) walk(z)
+    } else if(is.character(x)&&length(x)==1L&&grepl('^https?://',x)) out <<- c(out,x)
+    invisible(NULL)
+  }
+  walk(j); unique(out[!is.na(out)&nzchar(out)&grepl('^https?://',out)])
+}
+attempts_all <- list(); status_all <- list()
+for(i in seq_len(nrow(b))){
+  r <- b[i,]; id <- as.character(r$record_number); title <- as.character(r$title)
+  doi <- if('doi'%in%names(r)) trimws(as.character(r$doi)) else ''
+  if(is.na(doi)) doi <- ''
+  a <- list(); saved <- FALSE; vurl <- ''; vinfo <- NULL
+  log <- function(route,u,res,candidate='') a[[length(a)+1L]] <<- row_attempt(id,route,u,res,candidate)
+  if('full_text_url'%in%names(r)&&!is.na(r$full_text_url)&&nzchar(trimws(as.character(r$full_text_url)))){
+    u <- as.character(r$full_text_url); z <- safe_get(u); log('existing_canonical_url',u,z,u); vv <- validate_doc(z$content_type,z$bytes)
+    if(z$ok&&isTRUE(vv$ok)){saved<-TRUE;vurl<-u;vinfo<-vv}
+  }
+  if(!nzchar(doi)){
+    u<-paste0('https://api.crossref.org/works?query.title=',URLencode(title,reserved=TRUE),'&rows=3'); z<-safe_get(u,'application/json'); log('crossref_title_discovery',u,z)
+    if(z$ok){j<-tryCatch(fromJSON(rawToChar(z$bytes),simplifyVector=FALSE),error=function(e)NULL);it<-tryCatch(j$message$items,error=function(e)NULL);if(is.list(it)&&length(it)){d<-it[[1]]$DOI;if(is.character(d)&&length(d))doi<-d}}
+  }
+  if(nzchar(doi)&&!saved){u<-paste0('https://doi.org/',doi);z<-safe_get(u);log('doi_publisher',u,z);vv<-validate_doc(z$content_type,z$bytes);if(z$ok&&isTRUE(vv$ok)){saved<-TRUE;vurl<-u;vinfo<-vv}}
+  if(nzchar(doi)&&!saved){u<-paste0('https://api.unpaywall.org/v2/',URLencode(doi,reserved=TRUE),'?email=research@example.org';z<-safe_get(u,'application/json');log('unpaywall_discovery',u,z);if(z$ok){j<-tryCatch(fromJSON(rawToChar(z$bytes),simplifyVector=FALSE),error=function(e)NULL);for(cu in urls_from_json(j,c('url_for_pdf','url')))if(!saved){q<-safe_get(cu);vv<-validate_doc(q$content_type,q$bytes);log('unpaywall_full_text',cu,q,cu);if(q$ok&&isTRUE(vv$ok)){saved<-TRUE;vurl<-cu;vinfo<-vv}}}}
+  if(nzchar(doi)&&!saved){u<-paste0('https://api.openalex.org/works/https://doi.org/',URLencode(resolved_doi,reserved=TRUE));z<-safe_get(u,'application/json');log('openalex_discovery',u,z);if(z$ok){j<-tryCatch(fromJSON(rawToChar(z$bytes),simplifyVector=FALSE),error=function(e)NULL);for(cu in urls_from_json(j,c('pdf_url','landing_page_url')))if(!saved){q<-safe_get(cu);vv<-validate_doc(q$content_type,q$bytes);log('openalex_full_text',cu,q,cu);if(q$ok&&isTRUE(vv$ok)){saved<-TRUE;vurl<-cu;vinfo<-vv}}}}
+  qstr <- if(nzchar(doi)) paste0('DOI:',doi) else paste0('TITLE:',title)
+  u <- paste0('https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=',URLencode(qstr,reserved=TRUE),'&format=json&pageSize=5');z<-safe_get(u,'application/json');log('europepmc_discovery',u,z)
+  if(z$ok&&!saved){j<-tryCatch(fromJSON(rawToChar(z$bytes),simplifyVector=FALSE),error=function(e)NULL);rs<-tryCatch(j$resultList$result,error=function(e)NULL);if(is.list(rs))for(x in rs)if(is.list(x)&&!is.null(x$pmcid)&&is.character(x$pmcid)&&length(x$pmcid)&&nzchar(x$pmcid)&&!saved){cu<-paste0('https://www.ebi.ac.uk/europepmc/webservices/rest/',x$pmcid,'/fullTextXML');q2<-safe_get(cu,'application/xml');vv<-validate_doc(q2$content_type,q2$bytes);log('europepmc_full_text',cu,q2,cu);if(q2$ok&&isTRUE(vv$ok)){saved<-TRUE;vurl<-cu;vinfo<-vv}}}
+  if(!saved){u<-paste0('https://scholar.google.com/scholar?hl=en&q=',URLencode(paste0('"',title,'"'),reserved=TRUE));q2<-safe_get(u,'text/html');log('google_scholar_title_search',u,q2,u)}
+  if(saved){q<-safe_get(vurl);vv<-validate_doc(q$content_type,q$bytes);log('verified_document_download',vurl,q,vurl);if(q$ok&&isTRUE(vv$ok)){ext<-if(vv$format=='pdf')'.pdf'else if(vv$format=='xml')'.xml'else'.html';writeBin(q$bytes,file.path('outputs/full_text',paste0(gsub('[^A-Za-z0-9._-]','_',id),ext)));vinfo<-vv}else{saved<-FALSE;vurl<-'';vinfo<-NULL}}
+  status_all[[length(status_all)+1L]] <- data.frame(record_number=id,title=title,doi=doi,retrieval_status=if(saved) 'obtained' else 'unobtainable',full_text_verified=saved,references_verified=if(saved)isTRUE(vinfo$refs)elseFALSE,document_format=if(saved)as.character(vinfo$format)else'',full_text_bytes=if(saved)as.integer(vinfo$bytes)else 0L,content_validation=if(saved)as.character(vinfo$note)else'',full_text_url=vurl,extraction_status=if(saved)'pending_extraction'else'not_started',stringsAsFactors=FALSE)
+  attempts_all[[length(attempts_all)+1L]] <- do.call(rbind,a)
+}
+at<-do.call(rbind,attempts_all); st<-do.call(rbind,status_all); p<-sprintf('outputs/retrieval/batch_%03d_%03d',start,start+nrow(b)-1L); write_csv_base(at,paste0(p,'_attempts.csv')); write_csv_base(st,paste0(p,'_status.csv')); write_json(list(batch_start=start,batch_end=start+nrow(b)-1L,records=st),paste0(p,'_status.json'),auto_unbox=TRUE,pretty=TRUE); cat(sprintf('Completed retrieval batch %d-%d: %d complete full texts, %d unobtainable\n',start,start+nrow(b)-1L,sum(st$full_text_verified),sum(!st$full_text_verified)))
