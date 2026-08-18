@@ -1,0 +1,42 @@
+name: R CI
+
+on:
+  push:
+    paths:
+      - 'R/**'
+      - 'scripts/**'
+      - 'data/living_evidence_map_master.csv'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'R/**'
+      - 'scripts/**'
+      - 'data/living_evidence_map_master.csv'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.4'
+
+      - name: Install packages
+        run: Rscript -e "install.packages(c('readr','httr2','jsonlite'), repos='https://cloud.r-project.org')"
+
+      - name: Parse-check R files
+        run: |
+          Rscript -e "files <- c('R/check_dataset.R','R/retrieval.R','scripts/run_retrieval.R'); for (f in files) { parse(f); cat('OK:', f, '\\n') }"
+
+      - name: Validate master dataset
+        run: Rscript -e "source('R/check_dataset.R'); x <- check_dataset('data/living_evidence_map_master.csv'); cat('Records:', nrow(x), '\\n'); cat('Columns:', ncol(x), '\\n')"
