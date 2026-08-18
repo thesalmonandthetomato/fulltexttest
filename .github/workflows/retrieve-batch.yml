@@ -1,0 +1,28 @@
+name: Retrieve batch
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: First record position (1-100)
+        required: true
+        default: '1'
+      size:
+        description: Batch size
+        required: true
+        default: '10'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare bounded retrieval batch
+        run: python scripts/retrieve_batch.py ${{ inputs.start }} ${{ inputs.size }}
+      - name: Upload retrieval batch manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-batch-${{ inputs.start }}
+          path: outputs/retrieval_batch_*.json
