@@ -17,6 +17,13 @@ on:
 permissions:
   contents: read
 
+# Retrieval runs must be serial. A newer commit cancels an older retrieval run,
+# preventing concurrent API traffic, misleading results, and obsolete runs
+# continuing after a new fix has been committed.
+concurrency:
+  group: fulltext-retrieval
+  cancel-in-progress: true
+
 jobs:
   retrieve:
     runs-on: ubuntu-22.04
@@ -31,7 +38,10 @@ jobs:
         run: |
           set -eux
           echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "github.sha=${{ github.sha }}"
+          git rev-parse HEAD
           test "$GITHUB_SHA" = "${{ github.sha }}"
+          test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
           echo "Verified workflow is running the triggering commit: $GITHUB_SHA"
 
       - name: Install runtime tools
