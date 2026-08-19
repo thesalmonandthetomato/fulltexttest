@@ -1,10 +1,8 @@
 source("retrieval/R/fulltext.R")
-# Load strict identity overrides before capturing the baseline function so every
-# direct DOI/URL candidate is subject to the same identity gate.
 source("retrieval/R/identity_overrides.R")
-
 baseline_run_one <- run_one
 if (file.exists("retrieval/R/additive_discovery_v4.R")) source("retrieval/R/additive_discovery_v4.R")
+source("retrieval/R/discovery_overrides.R")
 run_one <- additive_run_one
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -14,7 +12,6 @@ dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
 master <- read_master("data/living_evidence_map_master.csv")
 if (ncol(master) < 7L) stop("Master database has fewer than 7 columns; cannot use column G as title")
-# Column G is authoritative for title, irrespective of header naming.
 master[["title"]] <- normalise(master[[7L]])
 rid <- find_first_column(names(master), c("record_id", "id"))
 sel <- record_ids(master, ids)
