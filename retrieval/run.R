@@ -4,6 +4,7 @@ source("retrieval/R/fulltext.R")
 # runs only after the baseline has failed.
 baseline_run_one <- run_one
 if (file.exists("retrieval/R/additive_discovery_v3.R")) source("retrieval/R/additive_discovery_v3.R")
+if (file.exists("retrieval/R/discovery_http_fix.R")) source("retrieval/R/discovery_http_fix.R")
 run_one <- additive_run_one
 
 args <- commandArgs(trailingOnly = TRUE)
