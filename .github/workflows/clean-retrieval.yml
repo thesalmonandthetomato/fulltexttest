@@ -20,29 +20,26 @@ permissions:
 jobs:
   retrieve:
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout source data and scripts
         uses: actions/checkout@v4
 
-      - name: Install R and system tools
+      - name: Install R and command-line tools
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y r-base r-base-dev libcurl4-openssl-dev libssl-dev libxml2-dev poppler-utils curl
+          sudo apt-get install -y r-base r-base-dev curl ca-certificates poppler-utils
+          command -v Rscript
           Rscript --version
-          pdftotext -v
-
-      - name: Install only required R packages
-        run: |
-          set -euo pipefail
-          Rscript -e "options(timeout=120); install.packages(c('curl'), repos='https://cloud.r-project.org')"
-          Rscript -e "stopifnot(requireNamespace('curl', quietly=TRUE))"
+          command -v curl
+          curl --version | head -n 1
+          command -v pdftotext
 
       - name: Parse-check blank-slate code
         run: |
           set -euo pipefail
-          Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/run.R')"
+          Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/run.R'); cat('R parse OK\n')"
 
       - name: Run retrieval
         env:
