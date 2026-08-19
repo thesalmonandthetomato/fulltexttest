@@ -1,13 +1,6 @@
 name: Retrieve full-text pilot
 
 on:
-  workflow_dispatch:
-    inputs:
-      record_ids:
-        description: Comma-separated record_id values from the master dataset; leave blank for the deterministic three-record pilot
-        required: false
-        default: ''
-        type: string
   push:
     paths:
       - '.github/pilot.trigger'
@@ -15,6 +8,13 @@ on:
       - 'R/**'
       - 'scripts/**'
       - 'data/living_evidence_map_master.csv'
+  workflow_dispatch:
+    inputs:
+      record_ids:
+        description: Comma-separated record_id values from the master dataset; leave blank for the deterministic three-record pilot
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -27,17 +27,18 @@ jobs:
       - name: Checkout exact commit
         uses: actions/checkout@v4
 
-      - name: Check hosted R
+      - name: Check runner R
         run: |
           set -euo pipefail
           command -v Rscript
           Rscript --version
+          Rscript -e "stopifnot(getRversion() >= '4.3.0')"
 
       - name: Install system dependencies
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y poppler-utils libcurl4-openssl-dev libssl-dev libxml2-dev pkg-config
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends poppler-utils libcurl4-openssl-dev libssl-dev libxml2-dev pkg-config
 
       - name: Verify system dependencies
         run: |
@@ -46,10 +47,12 @@ jobs:
           command -v pkg-config
           pkg-config --exists libcurl
 
-      - name: Install R packages
+      - name: Install R packages from CRAN
+        env:
+          R_DEFAULT_PACKAGES: null
         run: |
           set -euo pipefail
-          Rscript -e "options(timeout=600); install.packages(c('readr','httr2','jsonlite'), repos='https://cloud.r-project.org', Ncpus=2)"
+          Rscript -e "options(timeout=300); repos <- c(CRAN='https://cloud.r-project.org'); install.packages(c('readr','httr2','jsonlite'), repos=repos, dependencies=c('Depends','Imports'))"
           Rscript -e "stopifnot(requireNamespace('readr', quietly=TRUE), requireNamespace('httr2', quietly=TRUE), requireNamespace('jsonlite', quietly=TRUE))"
 
       - name: Parse-check retrieval code
