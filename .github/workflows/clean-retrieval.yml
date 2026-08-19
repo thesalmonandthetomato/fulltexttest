@@ -25,6 +25,10 @@ jobs:
   retrieve:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    container:
+      image: rocker/r-ver:4.4.2
+      options: --user root
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
