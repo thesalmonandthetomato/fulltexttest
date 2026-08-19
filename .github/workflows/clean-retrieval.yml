@@ -39,11 +39,12 @@ jobs:
       - name: Parse-check active R code
         run: |
           set -eux
-          Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/R/additive_discovery.R'); parse('retrieval/run.R')"
+          Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/R/additive_discovery_v3.R'); parse('retrieval/run.R')"
           test ! -e retrieval/R/discovery.R
           test ! -e retrieval/R/runtime_overrides.R
           test ! -e retrieval/R/discovery_network_overrides.R
-          echo 'Active retrieval implementation: fulltext.R + additive_discovery.R'
+          test -e retrieval/R/additive_discovery_v3.R
+          echo 'Active retrieval implementation: fulltext.R + additive_discovery_v3.R'
 
       - name: Run clean retrieval
         env:
