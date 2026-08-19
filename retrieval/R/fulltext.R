@@ -42,10 +42,18 @@ record_ids <- function(df, ids = "__FIRST3__") {
 extract_urls <- function(x) {
   x <- normalise(x)
   if (!nzchar(x)) return(character())
-  hits <- regmatches(x, gregexpr("https?://[^[:space:]<>\\\"]+", x, perl = TRUE))[[1]]
+  hits <- regmatches(x, gregexpr("https?://[^[:space:]<>\"']+", x, perl = TRUE))[[1]]
   if (!length(hits) || identical(hits, character(0))) return(character())
-  hits <- sub("[),.;]+$", "", hits)
-  unique(hits[nzchar(hits)])
+  # A source field can contain adjacent URLs with no delimiter. Split before each new URL.
+  pieces <- unlist(lapply(hits, function(h) {
+    z <- regmatches(h, gregexpr("https?://", h, perl = TRUE))[[1]]
+    if (length(z) <= 1L) return(h)
+    starts <- gregexpr("https?://", h, perl = TRUE)[[1]]
+    ends <- c(starts[-1L] - 1L, nchar(h))
+    substring(h, starts, ends)
+  }), use.names = FALSE)
+  pieces <- sub("[),.;]+$", "", pieces)
+  unique(pieces[nzchar(pieces)])
 }
 
 extract_dois <- function(x) {
@@ -70,14 +78,20 @@ candidate_urls <- function(row) {
 
 safe_request <- function(url, timeout_seconds = 30L) {
   started <- Sys.time()
-  res <- tryCatch({
-    h <- curl::new_handle(useragent = "fulltexttest-clean-r/2.0", timeout = timeout_seconds, connecttimeout = min(15L, timeout_seconds), followlocation = TRUE, maxredirs = 10L)
-    req <- curl::curl_fetch_memory(url, handle = h)
-    list(ok = TRUE, status = req$status_code, type = req$type %||% "", body = req$content,
-         final_url = req$url %||% url, error = "", elapsed = as.numeric(difftime(Sys.time(), started, units = "secs")))
-  }, error = function(e) list(ok = FALSE, status = NA_integer_, type = "", body = raw(), final_url = url,
-                              error = conditionMessage(e), elapsed = as.numeric(difftime(Sys.time(), started, units = "secs"))))
-  res
+  tmp <- tempfile(fileext = ".bin")
+  hdr <- tempfile(fileext = ".headers")
+  on.exit(unlink(c(tmp, hdr)), add = TRUE)
+  args <- c("-L", "--fail-with-body", "--silent", "--show-error", "--max-time", as.character(timeout_seconds),
+            "--connect-timeout", "15", "--user-agent", "fulltexttest-clean-r/3.0", "-D", hdr, "-o", tmp, url)
+  status <- suppressWarnings(system2("curl", args, stdout = FALSE, stderr = FALSE))
+  body <- if (file.exists(tmp)) readBin(tmp, "raw", n = file.info(tmp)$size) else raw()
+  headers <- if (file.exists(hdr)) readLines(hdr, warn = FALSE) else character()
+  status_line <- tail(grep("^HTTP/", headers, value = TRUE), 1L)
+  code <- if (length(status_line)) suppressWarnings(as.integer(sub("^HTTP/[0-9.]+\\s+([0-9]+).*$", "\\1", status_line))) else NA_integer_
+  ctype <- if (length(grep("^Content-Type:", headers, ignore.case = TRUE))) trimws(sub("^Content-Type:\\s*", "", tail(grep("^Content-Type:", headers, ignore.case = TRUE, value = TRUE), 1L), ignore.case = TRUE)) else ""
+  final_url <- if (length(grep("^Location:", headers, ignore.case = TRUE))) tail(grep("^Location:", headers, ignore.case = TRUE, value = TRUE), 1L) else url
+  list(ok = status == 0L && !is.na(code) && code >= 200L && code < 300L, status = code, type = ctype, body = body, final_url = final_url,
+       error = if (status != 0L) paste0("curl_exit_", status) else "", elapsed = as.numeric(difftime(Sys.time(), started, units = "secs")))
 }
 
 strip_html <- function(x) {
@@ -117,31 +131,30 @@ parse_response <- function(body, content_type, url) {
   }
   raw_text <- tryCatch(rawToChar(body), error = function(e) "")
   if (grepl("xml", ct, fixed = TRUE)) {
-    parsed <- strip_html(raw_text)
-    v <- validate_text(parsed, "xml")
+    parsed <- strip_html(raw_text); v <- validate_text(parsed, "xml")
     return(c(v, list(extension = ".xml", parsed_text = parsed)))
   }
   if (grepl("html", ct, fixed = TRUE) || grepl("text/html", tolower(raw_text), fixed = TRUE)) {
-    parsed <- strip_html(raw_text)
-    v <- validate_text(parsed, "html")
+    parsed <- strip_html(raw_text); v <- validate_text(parsed, "html")
     return(c(v, list(extension = ".html", parsed_text = parsed)))
   }
   list(ok = FALSE, chars = 0L, reference_markers = 0L, reason = "unsupported_response", format = "unknown", extension = ".bin", parsed_text = "")
 }
 
 run_one <- function(row, out_dir, timeout_seconds = 30L) {
-  rid_col <- find_first_column(names(row), c("record_id", "id"))
-  rid <- row[[rid_col]]
+  rid_col <- find_first_column(names(row), c("record_id", "id")); rid <- row[[rid_col]]
   urls <- candidate_urls(row)
   dir.create(file.path(out_dir, "documents"), recursive = TRUE, showWarnings = FALSE)
   dir.create(file.path(out_dir, "parsed"), recursive = TRUE, showWarnings = FALSE)
   dir.create(file.path(out_dir, "audit"), recursive = TRUE, showWarnings = FALSE)
-  attempts <- list()
-  winner <- NULL
+  attempts <- list(); winner <- NULL
   for (u in urls) {
     r <- safe_request(u, timeout_seconds)
-    v <- if (r$ok && r$status >= 200 && r$status < 300) parse_response(r$body, r$type, r$final_url) else list(ok = FALSE, chars = 0L, reference_markers = 0L, reason = if (is.na(r$status)) paste0("request_error: ", r$error) else paste0("http_", r$status), format = "unknown", extension = ".bin", parsed_text = "")
-    attempts[[length(attempts) + 1L]] <- data.frame(record_id = rid, candidate_url = u, final_url = r$final_url, status = r$status, content_type = r$type, bytes = length(r$body), verified_complete = isTRUE(v$ok), format = v$format, reason = v$reason, elapsed_seconds = r$elapsed, stringsAsFactors = FALSE)
+    v <- if (r$ok) parse_response(r$body, r$type, r$final_url) else list(ok = FALSE, chars = 0L, reference_markers = 0L,
+      reason = if (is.na(r$status)) paste0("request_error: ", r$error) else paste0("http_", r$status), format = "unknown", extension = ".bin", parsed_text = "")
+    attempts[[length(attempts) + 1L]] <- data.frame(record_id = rid, candidate_url = u, final_url = r$final_url, status = r$status,
+      content_type = r$type, bytes = length(r$body), verified_complete = isTRUE(v$ok), format = v$format, reason = v$reason,
+      elapsed_seconds = r$elapsed, stringsAsFactors = FALSE)
     if (isTRUE(v$ok)) { winner <- list(url = u, response = r, validation = v); break }
   }
   audit <- if (length(attempts)) do.call(rbind, attempts) else data.frame(record_id = rid, candidate_url = NA_character_, final_url = NA_character_, status = NA_integer_, content_type = "", bytes = 0L, verified_complete = FALSE, format = "", reason = "no_candidate_urls", elapsed_seconds = 0, stringsAsFactors = FALSE)
