@@ -31,7 +31,7 @@ jobs:
         run: |
           set -eux
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl poppler-utils ca-certificates libcurl4-openssl-dev libxml2-dev
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl poppler-utils ca-certificates
           Rscript --version
           curl --version
           pdftotext -v
