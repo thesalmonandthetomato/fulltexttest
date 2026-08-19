@@ -4,21 +4,21 @@
 .v4_urls <- function(x) {
   x <- as.character(x); x <- x[!is.na(x)]
   out <- unlist(lapply(x, function(z) {
-    m <- gregexpr("https?://[^[:space:]<>\\\"']+", z, perl=TRUE)[[1]]
+    m <- gregexpr("https?://[^[:space:]<>\\\"']+", z, perl = TRUE)[[1]]
     if (m[1] < 0) return(character())
     regmatches(z, list(m))[[1]]
-  }), use.names=FALSE)
-  unique(gsub("&amp;", "&", sub("[),.;]+$", "", out), fixed=TRUE))
+  }), use.names = FALSE)
+  unique(gsub("&amp;", "&", sub("[),.;]+$", "", out), fixed = TRUE))
 }
-.v4_title <- function(x) { x <- as.character(x %||% ""); x[is.na(x)] <- ""; trimws(gsub("\\s+", " ", gsub("[^[:alnum:]]+", " ", x, perl=TRUE))) }
+.v4_title <- function(x) { x <- as.character(x %||% ""); x[is.na(x)] <- ""; trimws(gsub("\\s+", " ", gsub("[^[:alnum:]]+", " ", x, perl = TRUE))) }
 .v4_http <- function(url, timeout=30L) {
-  py <- file.path(getwd(),"retrieval","PYTHON","discovery_client.py")
+  py <- file.path(getwd(),"retrieval","PYTHON","discovery_runner.py")
   inp <- tempfile(); out <- tempfile(); on.exit(unlink(c(inp,out)),add=TRUE)
   writeLines(jsonlite::toJSON(list(url=url,timeout=timeout),auto_unbox=TRUE),inp,useBytes=TRUE)
   started <- Sys.time(); exit <- suppressWarnings(system2("python3",py,stdin=inp,stdout=out,stderr=FALSE))
   txt <- if(file.exists(out)) paste(readLines(out,warn=FALSE),collapse="") else ""
   r <- tryCatch(jsonlite::fromJSON(txt),error=function(e) NULL)
-  if(exit != 0L || is.null(r)) return(list(ok=FALSE,status=NA_integer_,type="",text="",final_url=url,error=paste0("python_exit_",exit),bytes=0,elapsed=as.numeric(difftime(Sys.time(),started,units="secs"))))
+  if(exit != 0L || is.null(r)) return(list(ok=FALSE,status=NA_integer_,type="",text="",final_url=url,error=paste0("python_exit_",exit),bytes=0,elapsed=as.numeric(difftime(Sys.time(),started,units="secs")),candidates=character()))
   r$elapsed <- as.numeric(difftime(Sys.time(),started,units="secs")); r
 }
 .v4_hrefs <- function(html,base="") {
@@ -32,7 +32,7 @@
 }
 .v4_google <- function(html) { x <- .v4_hrefs(html,"https://www.google.com"); q <- x[grepl("google\\.[^/]+/(?:url|aclk)\\?",x,ignore.case=TRUE,perl=TRUE)]; if(length(q)){q<-sub("^.*[?&]q=([^&]+).*$","\\1",q,perl=TRUE);x<-c(x,utils::URLdecode(q))}; x <- .v4_urls(x); x[!grepl("google\\.",x,ignore.case=TRUE)] }
 .v4_api <- function(text, fields) { out<-character(); for(f in fields){m<-regmatches(text,gregexpr(paste0('"',f,'"[[:space:]]*:[[:space:]]*"(https?:[^"\\r\\n]+)"'),text,perl=TRUE))[[1]]; if(length(m)) out<-c(out,sub(paste0('^"',f,'"[[:space:]]*:[[:space:]]*"'),' ',sub('"$','',m),perl=TRUE))}; .v4_urls(utils::URLdecode(out)) }
-.v4_one <- function(stage,q,url,parser=function(x) character(),timeout=30L) { r<-.v4_http(url,timeout); urls<-if(isTRUE(r$ok)) parser(r$text) else character(); list(stage=stage,query=q,url=url,r=r,urls=urls) }
+.v4_one <- function(stage,q,url,parser=function(x) character(),timeout=30L) { r<-.v4_http(url,timeout); urls<-if(length(r$candidates)) r$candidates else if(isTRUE(r$ok)) parser(r$text) else character(); list(stage=stage,query=q,url=url,r=r,urls=urls) }
 .v4_cat <- function(r,n) if(n) "candidate_found" else if(!is.null(r$status)&&!is.na(r$status)&&r$status%in%c(401,403,429)) "access_failure" else if(!is.null(r$status)&&!is.na(r$status)&&r$status%in%c(404,410)) "resolution_failure" else if(nzchar(r$error%||%"")) "transport_failure" else if(isTRUE(r$ok)) "discovery_failure" else "discovery_failure"
 
 additive_run_one <- function(row,out_dir,timeout_seconds=30L) {
