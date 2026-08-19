@@ -44,7 +44,7 @@ jobs:
           python3 --version
           python3 -c 'import requests, bs4; print("requests", requests.__version__, "bs4", bs4.__version__)'
           pdftotext -v
-          python3 -m pip install --no-cache-dir --disable-pip-version-check git+https://github.com/computron/fulltext-article-downloader.git
+          python3 -m pip install --break-system-packages --no-cache-dir --disable-pip-version-check git+https://github.com/computron/fulltext-article-downloader.git
           fulltext-download --help >/dev/null
           Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org", quiet=TRUE); library(jsonlite); cat("jsonlite", as.character(packageVersion("jsonlite")), "\n")'
 
