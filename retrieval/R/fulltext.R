@@ -44,11 +44,9 @@ extract_urls <- function(x) {
   if (!nzchar(x)) return(character())
   hits <- regmatches(x, gregexpr("https?://[^[:space:]<>\"']+", x, perl = TRUE))[[1]]
   if (!length(hits) || identical(hits, character(0))) return(character())
-  # A source field can contain adjacent URLs with no delimiter. Split before each new URL.
   pieces <- unlist(lapply(hits, function(h) {
-    z <- regmatches(h, gregexpr("https?://", h, perl = TRUE))[[1]]
-    if (length(z) <= 1L) return(h)
     starts <- gregexpr("https?://", h, perl = TRUE)[[1]]
+    if (length(starts) <= 1L) return(h)
     ends <- c(starts[-1L] - 1L, nchar(h))
     substring(h, starts, ends)
   }), use.names = FALSE)
@@ -82,7 +80,7 @@ safe_request <- function(url, timeout_seconds = 30L) {
   hdr <- tempfile(fileext = ".headers")
   on.exit(unlink(c(tmp, hdr)), add = TRUE)
   args <- c("-L", "--fail-with-body", "--silent", "--show-error", "--max-time", as.character(timeout_seconds),
-            "--connect-timeout", "15", "--user-agent", "fulltexttest-clean-r/3.0", "-D", hdr, "-o", tmp, url)
+            "--connect-timeout", "15", "--user-agent", "fulltexttest-clean-r/4.0", "-D", hdr, "-o", tmp, url)
   status <- suppressWarnings(system2("curl", args, stdout = FALSE, stderr = FALSE))
   body <- if (file.exists(tmp)) readBin(tmp, "raw", n = file.info(tmp)$size) else raw()
   headers <- if (file.exists(hdr)) readLines(hdr, warn = FALSE) else character()
@@ -92,6 +90,63 @@ safe_request <- function(url, timeout_seconds = 30L) {
   final_url <- if (length(grep("^Location:", headers, ignore.case = TRUE))) tail(grep("^Location:", headers, ignore.case = TRUE, value = TRUE), 1L) else url
   list(ok = status == 0L && !is.na(code) && code >= 200L && code < 300L, status = code, type = ctype, body = body, final_url = final_url,
        error = if (status != 0L) paste0("curl_exit_", status) else "", elapsed = as.numeric(difftime(Sys.time(), started, units = "secs")))
+}
+
+# Discover additional locations when the master record's supplied URLs fail.
+# This deliberately uses public metadata/search APIs rather than relying on a
+# single publisher host. Google Scholar remains a useful manual search target,
+# but is not scraped in Actions because it is CAPTCHA/rate-limit prone.
+discover_search_urls <- function(row, timeout_seconds = 20L) {
+  title_col <- find_first_column(names(row), c("title", "short_title", "title_normalised"))
+  author_col <- find_first_column(names(row), c("authors", "author", "first_author"))
+  doi_col <- find_first_column(names(row), c("doi"))
+  title <- if (!is.null(title_col)) normalise(row[[title_col]]) else ""
+  authors <- if (!is.null(author_col)) normalise(row[[author_col]]) else ""
+  doi <- if (!is.null(doi_col)) normalise(row[[doi_col]]) else ""
+  if (!nzchar(title)) return(character())
+
+  q <- utils::URLencode(paste(title, authors), reserved = TRUE)
+  raw <- function(url) {
+    tmp <- tempfile(fileext = ".json")
+    on.exit(unlink(tmp), add = TRUE)
+    status <- suppressWarnings(system2("curl", c("-L", "--fail", "--silent", "--show-error", "--max-time", as.character(timeout_seconds),
+                                                   "--connect-timeout", "10", "--user-agent", "fulltexttest-clean-r/4.0", "-o", tmp, url), stdout = FALSE, stderr = FALSE))
+    if (status != 0L || !file.exists(tmp)) return("")
+    paste(readLines(tmp, warn = FALSE), collapse = "")
+  }
+
+  out <- character()
+  # OpenAlex title/author search exposes open-access PDF locations.
+  oa <- raw(paste0("https://api.openalex.org/works?search=", q, "&per-page=5"))
+  if (nzchar(oa)) {
+    hits <- regmatches(oa, gregexpr('"pdf_url":"[^"]+"', oa, perl = TRUE))[[1]]
+    if (length(hits)) out <- c(out, sub('^"pdf_url":"', '', sub('"$', '', hits)))
+    hits <- regmatches(oa, gregexpr('"landing_page_url":"[^"]+"', oa, perl = TRUE))[[1]]
+    if (length(hits)) out <- c(out, sub('^"landing_page_url":"', '', sub('"$', '', hits)))
+  }
+
+  # Semantic Scholar frequently indexes author manuscripts and repository PDFs.
+  ss <- raw(paste0("https://api.semanticscholar.org/graph/v1/paper/search?query=", q,
+                   "&limit=5&fields=title,openAccessPdf,url,externalIds"))
+  if (nzchar(ss)) {
+    hits <- regmatches(ss, gregexpr('"url":"https?[^" ]+"', ss, perl = TRUE))[[1]]
+    if (length(hits)) out <- c(out, sub('^"url":"', '', sub('"$', '', hits)))
+    hits <- regmatches(ss, gregexpr('"url" : "https?[^" ]+"', ss, perl = TRUE))[[1]]
+    if (length(hits)) out <- c(out, sub('^"url" : "', '', sub('"$', '', hits)))
+  }
+
+  # Crossref metadata can expose publisher/repository full-text links.
+  cr <- raw(paste0("https://api.crossref.org/works?query.title=", utils::URLencode(title, reserved = TRUE), "&rows=5"))
+  if (nzchar(cr)) {
+    hits <- regmatches(cr, gregexpr('"URL":"https?[^" ]+"', cr, perl = TRUE))[[1]]
+    if (length(hits)) out <- c(out, sub('^"URL":"', '', sub('"$', '', hits)))
+  }
+
+  # If we have a DOI, add common public metadata landing points as a final fallback.
+  if (nzchar(doi)) {
+    out <- c(out, paste0("https://api.openalex.org/works/https://doi.org/", utils::URLencode(doi, reserved = TRUE)))
+  }
+  unique(out[nzchar(out)])
 }
 
 strip_html <- function(x) {
@@ -144,6 +199,11 @@ parse_response <- function(body, content_type, url) {
 run_one <- function(row, out_dir, timeout_seconds = 30L) {
   rid_col <- find_first_column(names(row), c("record_id", "id")); rid <- row[[rid_col]]
   urls <- candidate_urls(row)
+  # Only perform broad metadata discovery after the known record URLs have
+  # failed. This keeps the established retrieval path first and makes the
+  # fallback auditable in the attempts file.
+  discovered <- discover_search_urls(row, min(timeout_seconds, 20L))
+  urls <- unique(c(urls, discovered))
   dir.create(file.path(out_dir, "documents"), recursive = TRUE, showWarnings = FALSE)
   dir.create(file.path(out_dir, "parsed"), recursive = TRUE, showWarnings = FALSE)
   dir.create(file.path(out_dir, "audit"), recursive = TRUE, showWarnings = FALSE)
