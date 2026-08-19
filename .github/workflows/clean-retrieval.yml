@@ -31,20 +31,24 @@ jobs:
         run: |
           set -eux
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl poppler-utils ca-certificates
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl poppler-utils ca-certificates python3 python3-requests
           Rscript --version
           curl --version
+          python3 --version
+          python3 -c 'import requests; print(requests.__version__)'
           pdftotext -v
 
-      - name: Parse-check active R code
+      - name: Parse-check active code
         run: |
           set -eux
           Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/R/additive_discovery_v3.R'); parse('retrieval/run.R')"
+          python3 -m py_compile retrieval/PYTHON/discovery_client.py
           test ! -e retrieval/R/discovery.R
           test ! -e retrieval/R/runtime_overrides.R
           test ! -e retrieval/R/discovery_network_overrides.R
           test -e retrieval/R/additive_discovery_v3.R
-          echo 'Active retrieval implementation: fulltext.R + additive_discovery_v3.R'
+          test -e retrieval/PYTHON/discovery_client.py
+          echo 'Active retrieval implementation: fulltext.R + additive_discovery_v3.R + Python discovery client'
 
       - name: Run clean retrieval
         env:
