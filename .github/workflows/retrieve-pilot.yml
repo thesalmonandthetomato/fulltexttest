@@ -46,10 +46,10 @@ jobs:
           command -v pkg-config
           pkg-config --exists libcurl
 
-      - name: Install R packages with binary preference
+      - name: Install R packages
         run: |
           set -euo pipefail
-          Rscript -e "options(pkgType='binary'); options(install.packages.compile.from.source='never'); install.packages(c('readr','httr2','jsonlite'), repos='https://packagemanager.posit.co/cran/__linux__/jammy/latest')"
+          Rscript -e "install.packages(c('readr','httr2','jsonlite'), repos='https://packagemanager.posit.co/cran/__linux__/noble/latest')"
           Rscript -e "stopifnot(requireNamespace('readr', quietly=TRUE), requireNamespace('httr2', quietly=TRUE), requireNamespace('jsonlite', quietly=TRUE))"
 
       - name: Parse-check retrieval code
