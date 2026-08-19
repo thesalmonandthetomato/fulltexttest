@@ -1,7 +1,10 @@
 source("retrieval/R/fulltext.R")
-# The legacy discovery.R is intentionally not sourced. Its search/curl path is
-# superseded by runtime_overrides.R and was the source of malformed candidates.
-if (file.exists("retrieval/R/runtime_overrides.R")) source("retrieval/R/runtime_overrides.R")
+
+# Preserve the proven 5/15 retriever. Discovery is strictly additive and only
+# runs after the baseline has failed.
+baseline_run_one <- run_one
+if (file.exists("retrieval/R/additive_discovery.R")) source("retrieval/R/additive_discovery.R")
+run_one <- additive_run_one
 
 args <- commandArgs(trailingOnly = TRUE)
 ids <- if (length(args)) args[[1]] else "__FIRST3__"
