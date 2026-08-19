@@ -1,0 +1,63 @@
+name: Clean R full-text retrieval
+
+on:
+  workflow_dispatch:
+    inputs:
+      record_ids:
+        description: Comma-separated record_id values; blank selects first three eligible records
+        required: false
+        default: ''
+        type: string
+  push:
+    paths:
+      - 'retrieval/**'
+      - 'data/living_evidence_map_master.csv'
+      - '.github/workflows/clean-retrieval.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  retrieve:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source data and scripts
+        uses: actions/checkout@v4
+
+      - name: Install R and system tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y r-base r-base-dev libcurl4-openssl-dev libssl-dev libxml2-dev poppler-utils curl
+          Rscript --version
+          pdftotext -v
+
+      - name: Install only required R packages
+        run: |
+          set -euo pipefail
+          Rscript -e "options(timeout=120); install.packages(c('curl'), repos='https://cloud.r-project.org')"
+          Rscript -e "stopifnot(requireNamespace('curl', quietly=TRUE))"
+
+      - name: Parse-check blank-slate code
+        run: |
+          set -euo pipefail
+          Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/run.R')"
+
+      - name: Run retrieval
+        env:
+          RECORD_IDS: ${{ inputs.record_ids }}
+        run: |
+          set -euo pipefail
+          if [ -n "$RECORD_IDS" ]; then
+            Rscript retrieval/run.R "$RECORD_IDS"
+          else
+            Rscript retrieval/run.R
+          fi
+
+      - name: Upload clean retrieval results
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-retrieval-${{ github.run_id }}
+          path: outputs/clean_retrieval/
+          if-no-files-found: error
