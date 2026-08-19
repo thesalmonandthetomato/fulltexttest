@@ -1,9 +1,8 @@
 source("retrieval/R/fulltext.R")
 # Load the broader discovery layer after fulltext.R.
 if (file.exists("retrieval/R/discovery.R")) source("retrieval/R/discovery.R")
-# Load shell-safe network helpers last so they override helpers in the
-# discovery/fulltext layers. This prevents URLs containing parentheses or
-# other shell metacharacters from reaching /bin/sh unquoted.
+# Load the clean runtime implementation last. This file contains the authoritative
+# run_one()/discover_search_urls()/safe_request() stack used in Actions.
 if (file.exists("retrieval/R/runtime_overrides.R")) source("retrieval/R/runtime_overrides.R")
 
 args <- commandArgs(trailingOnly = TRUE)
