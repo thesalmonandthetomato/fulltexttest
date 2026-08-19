@@ -31,14 +31,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify exact and current source commit
+      - name: Verify exact source commit
         env:
           EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -eux
-          echo "GITHUB_SHA=$GITHUB_SHA"
-          echo "EXPECTED_SHA=$EXPECTED_SHA"
-          echo "HEAD_SHA=$(git rev-parse HEAD)"
           test "$GITHUB_SHA" = "$EXPECTED_SHA"
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           echo "VERIFIED_TRIGGER_SHA=$EXPECTED_SHA"
