@@ -1,4 +1,7 @@
 source("retrieval/R/fulltext.R")
+# Load strict identity overrides before capturing the baseline function so every
+# direct DOI/URL candidate is subject to the same identity gate.
+source("retrieval/R/identity_overrides.R")
 
 baseline_run_one <- run_one
 if (file.exists("retrieval/R/additive_discovery_v4.R")) source("retrieval/R/additive_discovery_v4.R")
@@ -11,17 +14,16 @@ dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
 master <- read_master("data/living_evidence_map_master.csv")
 if (ncol(master) < 7L) stop("Master database has fewer than 7 columns; cannot use column G as title")
+# Column G is authoritative for title, irrespective of header naming.
 master[["title"]] <- normalise(master[[7L]])
 rid <- find_first_column(names(master), c("record_id", "id"))
 sel <- record_ids(master, ids)
 if (!length(sel)) stop("No records selected")
 manifest <- master[match(sel, master[[rid]]), , drop = FALSE]
-utils::write.csv(data.frame(record_id = sel), file.path(out, "selection.csv"), row.names = FALSE, na = "")
 utils::write.csv(manifest, file.path(out, "selected_records.csv"), row.names = FALSE, na = "")
+utils::write.csv(data.frame(record_id = sel), file.path(out, "selection.csv"), row.names = FALSE, na = "")
 results <- lapply(sel, function(id) {
   ans <- run_one(master[master[[rid]] == id, , drop = FALSE][1, ], out)
-  # Ensure every record contributes the same result schema, even when baseline
-  # returns an audit-only object or discovery returns a shortened result.
   ans[["record_id"]] <- as.character(id)
   ans
 })
