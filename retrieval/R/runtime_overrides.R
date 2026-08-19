@@ -1,6 +1,34 @@
 # Runtime-safe replacements for network helpers.
-# These functions are sourced after fulltext.R so that shell metacharacters
-# in discovered URLs cannot be interpreted by /bin/sh.
+# system2() arguments are passed directly; do NOT add shell quoting to individual
+# arguments, because the quote characters become part of the URL and cause
+# curl exit 3. We also normalise JSON-escaped URLs before retrieval.
+
+clean_discovered_url <- function(x) {
+  x <- as.character(x)
+  x <- gsub('\\\\/', '/', x, fixed = FALSE)
+  x <- gsub('\\\\u0026', '&', x, fixed = TRUE)
+  x <- gsub('\\\\u003d', '=', x, fixed = TRUE)
+  x <- gsub('\\\\u003f', '?', x, fixed = TRUE)
+  x <- gsub('\\\\u003a', ':', x, fixed = TRUE)
+  x <- gsub('\\\\u0022', '"', x, fixed = TRUE)
+  x <- sub('[),.;]+$', '', x)
+  trimws(x)
+}
+
+json_urls <- function(txt, fields = c('url_for_pdf', 'pdf_url', 'landing_page_url', 'url')) {
+  if (!nzchar(txt)) return(character())
+  out <- character()
+  for (field in fields) {
+    pat <- paste0('"', field, '"\\s*:\\s*"(https?[^"\\\\]+)"')
+    m <- regexec(pat, txt, perl = TRUE)
+    hits <- regmatches(txt, m)
+    if (length(hits)) {
+      vals <- vapply(hits, function(z) if (length(z) >= 2) z[[2]] else '', character(1))
+      out <- c(out, vals[nzchar(vals)])
+    }
+  }
+  unique(clean_discovered_url(out[nzchar(out)]))
+}
 
 safe_request <- function(url, timeout_seconds = 30L) {
   started <- Sys.time()
@@ -9,8 +37,8 @@ safe_request <- function(url, timeout_seconds = 30L) {
   on.exit(unlink(c(tmp, hdr)), add = TRUE)
   args <- c("-L", "--fail-with-body", "--silent", "--show-error",
             "--max-time", as.character(timeout_seconds), "--connect-timeout", "15",
-            "--user-agent", "fulltexttest-clean-r/4.1", "-D", shQuote(hdr),
-            "-o", shQuote(tmp), shQuote(url))
+            "--user-agent", "fulltexttest-clean-r/4.2", "-D", hdr,
+            "-o", tmp, url)
   status <- suppressWarnings(system2("curl", args, stdout = FALSE, stderr = FALSE))
   body <- if (file.exists(tmp)) readBin(tmp, "raw", n = file.info(tmp)$size) else raw()
   headers <- if (file.exists(hdr)) readLines(hdr, warn = FALSE) else character()
@@ -35,55 +63,61 @@ discover_search_urls <- function(row, timeout_seconds = 20L) {
   doi <- if (!is.null(doi_col)) normalise(row[[doi_col]]) else ""
   if (!nzchar(title)) return(character())
 
-  raw_json <- function(url) {
-    tmp <- tempfile(fileext = ".json")
+  raw_json <- function(url, ext = ".json") {
+    tmp <- tempfile(fileext = ext)
     on.exit(unlink(tmp), add = TRUE)
     args <- c("-L", "--fail", "--silent", "--show-error", "--max-time", as.character(timeout_seconds),
-              "--connect-timeout", "10", "--user-agent", "fulltexttest-clean-r/4.1", "-o", shQuote(tmp), shQuote(url))
+              "--connect-timeout", "10", "--user-agent", "fulltexttest-clean-r/4.2", "-o", tmp, url)
     status <- suppressWarnings(system2("curl", args, stdout = FALSE, stderr = FALSE))
     if (status != 0L || !file.exists(tmp)) return("")
     paste(readLines(tmp, warn = FALSE), collapse = "")
   }
 
-  q <- utils::URLencode(paste(title, authors), reserved = FALSE)
   out <- character()
+  q <- utils::URLencode(paste(title, authors), reserved = FALSE)
 
+  # OpenAlex: extract actual OA PDF/landing URLs, not just the API endpoint.
   oa <- raw_json(paste0("https://api.openalex.org/works?search=", q, "&per-page=5"))
-  if (nzchar(oa)) {
-    hits <- regmatches(oa, gregexpr('"pdf_url":"[^"]+"', oa, perl = TRUE))[[1]]
-    if (length(hits)) out <- c(out, sub('^"pdf_url":"', '', sub('"$', '', hits)))
-    hits <- regmatches(oa, gregexpr('"landing_page_url":"[^"]+"', oa, perl = TRUE))[[1]]
-    if (length(hits)) out <- c(out, sub('^"landing_page_url":"', '', sub('"$', '', hits)))
+  if (nzchar(oa)) out <- c(out, json_urls(oa, c("pdf_url", "landing_page_url")))
+
+  # DOI-specific OpenAlex record is useful when title search is noisy.
+  if (nzchar(doi)) {
+    oa_one <- raw_json(paste0("https://api.openalex.org/works/https://doi.org/", utils::URLencode(doi, reserved = TRUE)))
+    if (nzchar(oa_one)) out <- c(out, json_urls(oa_one, c("url_for_pdf", "pdf_url", "landing_page_url")))
   }
 
+  # Unpaywall: this is the strongest source for legally available repository copies.
+  if (nzchar(doi)) {
+    uw <- raw_json(paste0("https://api.unpaywall.org/v2/", utils::URLencode(doi, reserved = TRUE), "?email=fulltexttest@example.org"))
+    if (nzchar(uw)) out <- c(out, json_urls(uw, c("url_for_pdf", "url")))
+  }
+
+  # Semantic Scholar: repository/author manuscript URL when present.
   ss <- raw_json(paste0("https://api.semanticscholar.org/graph/v1/paper/search?query=", q,
                        "&limit=5&fields=title,openAccessPdf,url,externalIds"))
-  if (nzchar(ss)) {
-    hits <- regmatches(ss, gregexpr('"url":"https?[^" ]+"', ss, perl = TRUE))[[1]]
-    if (length(hits)) out <- c(out, sub('^"url":"', '', sub('"$', '', hits)))
-  }
+  if (nzchar(ss)) out <- c(out, json_urls(ss, c("url")))
 
+  # Crossref publisher URLs are useful as landing-page candidates.
   cr <- raw_json(paste0("https://api.crossref.org/works?query.title=", utils::URLencode(title, reserved = FALSE), "&rows=5"))
-  if (nzchar(cr)) {
-    hits <- regmatches(cr, gregexpr('"URL":"https?[^" ]+"', cr, perl = TRUE))[[1]]
-    if (length(hits)) out <- c(out, sub('^"URL":"', '', sub('"$', '', hits)))
+  if (nzchar(cr)) out <- c(out, json_urls(cr, c("URL")))
+
+  # Search-engine discovery. DuckDuckGo's HTML endpoint is much more useful in
+  # Actions than Google's JS-heavy page and returns result links in plain HTML.
+  search_q <- utils::URLencode(paste0('"', title, '" "full text"'), reserved = FALSE)
+  ddg <- raw_json(paste0("https://html.duckduckgo.com/html/?q=", search_q), ext = ".html")
+  if (nzchar(ddg)) {
+    hrefs <- regmatches(ddg, gregexpr('uddg=https?[^&"<> ]+', ddg, perl = TRUE))[[1]]
+    if (length(hrefs)) {
+      vals <- sub('^.*uddg=', '', hrefs)
+      vals <- utils::URLdecode(vals)
+      out <- c(out, vals)
+    }
+    direct <- regmatches(ddg, gregexpr('https?://[^"<> ]+', ddg, perl = TRUE))[[1]]
+    if (length(direct)) out <- c(out, direct)
   }
 
-  if (nzchar(doi)) {
-    out <- c(out,
-             paste0("https://api.openalex.org/works/https://doi.org/", utils::URLencode(doi, reserved = TRUE)),
-             paste0("https://api.unpaywall.org/v2/", utils::URLencode(doi, reserved = TRUE),
-                    "?email=fulltexttest@example.org"))
-  }
-
-  # Search-engine discovery through Google's public HTML endpoint. This is a
-  # fallback only; no assumptions are made about Google Scholar availability.
-  search_q <- utils::URLencode(paste0("\"", title, "\" full text PDF"), reserved = FALSE)
-  google <- tryCatch(raw_json(paste0("https://www.google.com/search?q=", search_q, "&num=10")), error = function(e) "")
-  if (nzchar(google)) {
-    links <- regmatches(google, gregexpr("https?://[^\\\"<> ]+", google, perl = TRUE))[[1]]
-    if (length(links)) out <- c(out, links)
-  }
-
-  unique(out[nzchar(out)])
+  # Add DOI resolution last; this is useful when discovery APIs return no OA URL.
+  if (nzchar(doi)) out <- c(out, paste0("https://doi.org/", doi))
+  out <- clean_discovered_url(out)
+  unique(out[nzchar(out) & grepl('^https?://', out)])
 }
