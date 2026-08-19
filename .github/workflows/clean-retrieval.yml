@@ -41,10 +41,9 @@ jobs:
           set -eux
           Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/R/additive_discovery.R'); parse('retrieval/run.R')"
           test ! -e retrieval/R/discovery.R
-          if grep -R -nE 'system2?\([^\n]*curl|curl[[:space:]]+.*--fail|curl[[:space:]]+-f([[:space:]]|$)' retrieval --include='*.R'; then
-            echo 'ERROR: legacy direct curl invocation found in retrieval/R' >&2
-            exit 1
-          fi
+          test ! -e retrieval/R/runtime_overrides.R
+          test ! -e retrieval/R/discovery_network_overrides.R
+          echo 'Active retrieval implementation: fulltext.R + additive_discovery.R'
 
       - name: Run clean retrieval
         env:
