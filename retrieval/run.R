@@ -1,4 +1,7 @@
 source("retrieval/R/fulltext.R")
+# Load the broader discovery layer after fulltext.R so its discover_search_urls()
+# implementation is used by run_one() without changing the established parser.
+if (file.exists("retrieval/R/discovery.R")) source("retrieval/R/discovery.R")
 
 args <- commandArgs(trailingOnly = TRUE)
 ids <- if (length(args)) args[[1]] else "__FIRST3__"
