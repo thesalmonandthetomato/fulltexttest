@@ -33,7 +33,7 @@
 .v4_google <- function(html) { x <- .v4_hrefs(html,"https://www.google.com"); q <- x[grepl("google\\.[^/]+/(?:url|aclk)\\?",x,ignore.case=TRUE,perl=TRUE)]; if(length(q)){q<-sub("^.*[?&]q=([^&]+).*$","\\1",q,perl=TRUE);x<-c(x,utils::URLdecode(q))}; x <- .v4_urls(x); x[!grepl("google\\.",x,ignore.case=TRUE)] }
 .v4_api <- function(text, fields) { out<-character(); for(f in fields){m<-regmatches(text,gregexpr(paste0('"',f,'"[[:space:]]*:[[:space:]]*"(https?:[^"\\r\\n]+)"'),text,perl=TRUE))[[1]]; if(length(m)) out<-c(out,sub(paste0('^"',f,'"[[:space:]]*:[[:space:]]*"'),' ',sub('"$','',m),perl=TRUE))}; .v4_urls(utils::URLdecode(out)) }
 .v4_one <- function(stage,q,url,parser=function(x) character(),timeout=30L) { r<-.v4_http(url,timeout); urls<-if(length(r$candidates)) r$candidates else if(isTRUE(r$ok)) parser(r$text) else character(); list(stage=stage,query=q,url=url,r=r,urls=urls) }
-.v4_cat <- function(r,n) if(n) "candidate_found" else if(!is.null(r$status)&&!is.na(r$status)&&r$status%in%c(401,403,429)) "access_failure" else if(!is.null(r$status)&&!is.na(r$status)&&r$status%in%c(404,410)) "resolution_failure" else if(nzchar(r$error%||%"")) "transport_failure" else if(isTRUE(r$ok)) "discovery_failure" else "discovery_failure"
+.v4_cat <- function(r,n) if(n) "candidate_found" else if(!is.null(r$status)&&!is.na(r$status)&&r$status%in%c(401,403,429)) "access_failure" else if(!is.null(r$status)&&!is.na(r$status)&&r$status%in%c(404,410)) "resolution_failure" else if(nzchar(r$error%||%"")) "transport_failure" else "discovery_failure"
 
 additive_run_one <- function(row,out_dir,timeout_seconds=30L) {
   baseline <- baseline_run_one(row,out_dir,timeout_seconds)
