@@ -1,6 +1,7 @@
 # Additive discovery/audit layer.
-# The established fulltext.R retriever remains the baseline. This layer runs only
-# after that baseline fails, then records every discovery/retrieval outcome.
+# The established baseline retriever is untouched. This layer is deliberately
+# self-contained at its network boundary so discovery cannot inherit malformed
+# URL handling or shell behaviour from the baseline.
 
 .normalise_title_words <- function(title) {
   x <- tolower(as.character(title %||% ""))
@@ -9,176 +10,213 @@
   trimws(x)
 }
 
-.title_terms <- function(title) {
-  x <- unlist(strsplit(.normalise_title_words(title), " ", fixed = TRUE))
-  unique(x[nchar(x) >= 3L])
-}
-
 .strict_url <- function(x) {
   x <- trimws(as.character(x))
-  if (!length(x) || !nzchar(x) || grepl("[[:space:]<>\\\"'`()]", x) ||
-      !grepl("^https?://", x, ignore.case = TRUE)) return(NA_character_)
+  if (!length(x) || !nzchar(x)) return(NA_character_)
+  # Split accidental concatenation before validation.
+  starts <- gregexpr("https?://", x, ignore.case = TRUE, perl = TRUE)[[1]]
+  if (!length(starts) || starts[1] < 0L) return(NA_character_)
+  if (length(starts) > 1L) x <- substring(x, starts[1], starts[2] - 1L)
   x <- gsub("\\\\/", "/", x, fixed = FALSE)
   x <- gsub("&amp;", "&", x, fixed = TRUE)
   x <- utils::URLdecode(x)
-  if (!grepl("^https?://[^/[:space:]]+", x, ignore.case = TRUE)) return(NA_character_)
+  x <- sub("[),.;]+$", "", x)
+  if (grepl("[[:space:]<>\\\"'`(){}]", x) || !grepl("^https?://[^/[:space:]]+", x, ignore.case = TRUE)) return(NA_character_)
   x
 }
 
-.safe_curl_text <- function(url, timeout = 20L) {
-  url <- .strict_url(url)
-  if (is.na(url)) return("")
-  tmp <- tempfile(fileext = ".html")
-  on.exit(unlink(tmp), add = TRUE)
-  args <- c("-L", "--fail", "--silent", "--show-error", "--max-time", as.character(timeout),
-            "--connect-timeout", "10", "--retry", "1", "--retry-delay", "3",
-            "--user-agent", "Mozilla/5.0 (X11; Linux x86_64) fulltexttest/1.0",
-            "-o", tmp, url)
-  status <- suppressWarnings(system2("curl", args, stdout = FALSE, stderr = FALSE))
-  if (status != 0L || !file.exists(tmp)) return("")
-  paste(readLines(tmp, warn = FALSE), collapse = "\n")
+.unique_urls <- function(x) {
+  if (!length(x)) return(character())
+  out <- unlist(lapply(as.character(x), function(z) {
+    z <- trimws(z)
+    starts <- gregexpr("https?://", z, ignore.case = TRUE, perl = TRUE)[[1]]
+    if (!length(starts) || starts[1] < 0L) return(character())
+    ends <- c(starts[-1L] - 1L, nchar(z))
+    vapply(seq_along(starts), function(i) .strict_url(substring(z, starts[i], ends[i])), character(1))
+  }), use.names = FALSE)
+  unique(out[!is.na(out) & nzchar(out)])
 }
 
-.hrefs <- function(html) {
+.discovery_request <- function(url, timeout = 30L, binary = FALSE) {
+  url <- .strict_url(url)
+  if (is.na(url)) return(list(ok = FALSE, status = NA_integer_, type = "", body = raw(), final_url = "", error = "invalid_url", elapsed = 0))
+  tmp <- tempfile(fileext = if (binary) ".bin" else ".txt")
+  hdr <- tempfile(fileext = ".headers")
+  on.exit(unlink(c(tmp, hdr)), add = TRUE)
+  args <- c("-L", "--fail-with-body", "--silent", "--show-error",
+            "--max-time", as.character(timeout), "--connect-timeout", "15",
+            "--retry", "2", "--retry-delay", "3", "--user-agent",
+            "Mozilla/5.0 fulltexttest-discovery/2.0", "-D", hdr, "-o", tmp, url)
+  started <- Sys.time()
+  status <- suppressWarnings(system2("curl", args, stdout = FALSE, stderr = FALSE))
+  body <- if (file.exists(tmp)) readBin(tmp, "raw", n = file.info(tmp)$size) else raw()
+  headers <- if (file.exists(hdr)) readLines(hdr, warn = FALSE) else character()
+  hs <- tail(grep("^HTTP/", headers, value = TRUE), 1L)
+  code <- if (length(hs)) suppressWarnings(as.integer(sub("^HTTP/[0-9.]+\\s+([0-9]+).*$", "\\1", hs))) else NA_integer_
+  ct <- tail(grep("^Content-Type:", headers, ignore.case = TRUE, value = TRUE), 1L)
+  ctype <- if (length(ct)) trimws(sub("^Content-Type:\\s*", "", ct, ignore.case = TRUE)) else ""
+  loc <- tail(grep("^Location:", headers, ignore.case = TRUE, value = TRUE), 1L)
+  final <- if (length(loc)) .strict_url(sub("^Location:\\s*", "", loc, ignore.case = TRUE)) else url
+  list(ok = status == 0L && !is.na(code) && code >= 200L && code < 300L,
+       status = code, type = ctype, body = body, final_url = final %||% url,
+       error = if (status != 0L) paste0("curl_exit_", status) else "",
+       elapsed = as.numeric(difftime(Sys.time(), started, units = "secs")))
+}
+
+.raw_text <- function(body) tryCatch(rawToChar(body), error = function(e) "")
+
+.hrefs <- function(html, base_url = "") {
   if (!nzchar(html)) return(character())
-  m <- regmatches(html, gregexpr("(?i)href[[:space:]]*=[[:space:]]*[\\\"']([^\\\"']+)[\\\"']", html, perl = TRUE))[[1]]
+  m <- regmatches(html, gregexpr("(?is)href[[:space:]]*=[[:space:]]*[\\\"']([^\\\"']+)[\\\"']", html, perl = TRUE))[[1]]
   if (!length(m)) return(character())
-  x <- sub("(?i)^href[[:space:]]*=[[:space:]]*[\\\"']", "", m, perl = TRUE)
+  x <- sub("(?is)^href[[:space:]]*=[[:space:]]*[\\\"']", "", m, perl = TRUE)
   x <- sub("[\\\"']$", "", x)
-  x <- x[grepl("^https?://", x, ignore.case = TRUE)]
-  unique(na.omit(vapply(x, .strict_url, character(1))))
+  x <- gsub("&amp;", "&", x, fixed = TRUE)
+  # Keep absolute URLs and simple root-relative links on the same host.
+  abs <- x[grepl("^https?://", x, ignore.case = TRUE)]
+  if (nzchar(base_url)) {
+    origin <- sub("^((?:https?://[^/]+)).*$", "\\1", base_url, perl = TRUE)
+    rel <- x[grepl("^/(?!/)", x, perl = TRUE)]
+    abs <- c(abs, paste0(origin, rel))
+  }
+  .unique_urls(abs)
+}
+
+.landing_candidates <- function(url, timeout = 30L) {
+  r <- .discovery_request(url, timeout)
+  if (!r$ok || !length(r$body)) return(list(urls = character(), response = r))
+  ct <- tolower(r$type)
+  if (grepl("pdf", ct) || grepl("xml", ct)) return(list(urls = r$final_url, response = r))
+  html <- .raw_text(r$body)
+  links <- .hrefs(html, r$final_url)
+  # Prioritise likely document/download links but retain all same-page candidates.
+  score <- grepl("pdf|download|full.?text|bitstream|article|view|file|content", links, ignore.case = TRUE)
+  list(urls = unique(c(links[score], links[!score])), response = r)
 }
 
 .search_google <- function(q) {
   u <- paste0("https://www.google.com/search?q=", utils::URLencode(q, reserved = TRUE), "&num=10")
-  h <- .safe_curl_text(u, 20L)
-  x <- .hrefs(h)
-  x[!grepl("google\\.", x, ignore.case = TRUE)]
+  p <- .discovery_request(u, 25L)
+  if (!p$ok) return(character())
+  x <- .hrefs(.raw_text(p$body), p$final_url)
+  .unique_urls(x[!grepl("google\\.", x, ignore.case = TRUE)])
 }
 
 .search_scholar <- function(q) {
   u <- paste0("https://scholar.google.com/scholar?q=", utils::URLencode(q, reserved = TRUE), "&hl=en")
-  h <- .safe_curl_text(u, 20L)
-  x <- .hrefs(h)
-  x[!grepl("scholar.google", x, ignore.case = TRUE)]
+  p <- .discovery_request(u, 25L)
+  if (!p$ok) return(character())
+  x <- .hrefs(.raw_text(p$body), p$final_url)
+  .unique_urls(x[!grepl("scholar\\.google", x, ignore.case = TRUE)])
 }
 
-.openalex_candidates <- function(title, doi = "") {
+.json_url_fields <- function(txt, fields) {
+  if (!nzchar(txt)) return(character())
+  out <- character()
+  for (field in fields) {
+    pat <- paste0('"', field, '"[[:space:]]*:[[:space:]]*"(https?[^"\\r\\n]*)"')
+    hits <- regmatches(txt, gregexpr(pat, txt, perl = TRUE))[[1]]
+    if (length(hits)) {
+      vals <- sub(paste0('^"', field, '"[[:space:]]*:[[:space:]]*"'), '', hits, perl = TRUE)
+      vals <- sub('"$', '', vals)
+      out <- c(out, vals)
+    }
+  }
+  .unique_urls(out)
+}
+
+.openalex_candidates <- function(title) {
   q <- utils::URLencode(.normalise_title_words(title), reserved = TRUE)
-  u <- paste0("https://api.openalex.org/works?search=", q, "&per-page=10")
-  h <- .safe_curl_text(u, 20L)
-  if (!nzchar(h)) return(character())
-  # OpenAlex JSON can contain escaped URLs. Extract URL-bearing fields only.
-  hits <- regmatches(h, gregexpr('"(?:pdf_url|landing_page_url|url_for_pdf)"\\s*:\\s*"https?[^"\\r\\n]*"', h, perl = TRUE))[[1]]
-  if (!length(hits)) return(character())
-  vals <- sub('^"[^\"]+"\\s*:\\s*"', '', hits, perl = TRUE)
-  vals <- sub('"$', '', vals)
-  unique(na.omit(vapply(vals, .strict_url, character(1))))
+  r <- .discovery_request(paste0("https://api.openalex.org/works?search=", q, "&per-page=10"), 25L)
+  if (!r$ok) return(character())
+  txt <- .raw_text(r$body)
+  .json_url_fields(txt, c("pdf_url", "landing_page_url", "url_for_pdf"))
 }
 
 .other_api_candidates <- function(title, doi = "") {
-  out <- character()
-  q <- utils::URLencode(.normalise_title_words(title), reserved = TRUE)
-  ss <- .safe_curl_text(paste0("https://api.semanticscholar.org/graph/v1/paper/search?query=", q,
-                               "&limit=10&fields=title,openAccessPdf,url,externalIds"), 20L)
-  if (nzchar(ss)) {
-    hits <- regmatches(ss, gregexpr('"url"\\s*:\\s*"https?[^"\\r\\n]+"', ss, perl = TRUE))[[1]]
-    if (length(hits)) {
-      v <- sub('^"url"\\s*:\\s*"', '', hits, perl = TRUE); v <- sub('"$', '', v)
-      out <- c(out, v)
-    }
-    hits <- regmatches(ss, gregexpr('"openAccessPdf"\\s*:\\s*\\{[^}]*"url"\\s*:\\s*"https?[^"\\r\\n]+"', ss, perl = TRUE))[[1]]
-    if (length(hits)) out <- c(out, sub('.*"url"\\s*:\\s*"', '', sub('"$', '', hits)))
-  }
+  out <- character(); q <- utils::URLencode(.normalise_title_words(title), reserved = TRUE)
+  r <- .discovery_request(paste0("https://api.semanticscholar.org/graph/v1/paper/search?query=", q,
+                                 "&limit=10&fields=title,openAccessPdf,url,externalIds"), 25L)
+  if (r$ok) out <- c(out, .json_url_fields(.raw_text(r$body), c("url")))
   if (nzchar(doi)) {
-    uw <- .safe_curl_text(paste0("https://api.unpaywall.org/v2/", utils::URLencode(doi, reserved = TRUE),
-                                 "?email=fulltexttest@example.org"), 20L)
-    if (nzchar(uw)) {
-      hits <- regmatches(uw, gregexpr('"url_for_pdf"\\s*:\\s*"https?[^"\\r\\n]+"', uw, perl = TRUE))[[1]]
-      if (length(hits)) out <- c(out, sub('^"url_for_pdf"\\s*:\\s*"', '', sub('"$', '', hits)))
-    }
+    r <- .discovery_request(paste0("https://api.unpaywall.org/v2/", utils::URLencode(doi, reserved = TRUE),
+                                   "?email=fulltexttest@example.org"), 25L)
+    if (r$ok) out <- c(out, .json_url_fields(.raw_text(r$body), c("url_for_pdf", "url")))
   }
-  unique(na.omit(vapply(out, .strict_url, character(1))))
+  .unique_urls(out)
 }
 
 .identity_score <- function(text, title) {
-  terms <- .title_terms(title)
+  terms <- unique(unlist(strsplit(.normalise_title_words(title), " ", fixed = TRUE)))
+  terms <- terms[nchar(terms) >= 3L]
   if (!length(terms)) return(0)
   z <- tolower(gsub("[^[:alnum:]]+", " ", text, perl = TRUE))
-  mean(terms %in% z)
+  mean(terms %in% strsplit(z, " ", fixed = TRUE)[[1]])
 }
 
-.classify_failure <- function(status, content_type, validation_reason, bytes = 0L) {
-  if (identical(validation_reason, "identity_failure")) return("identity_failure")
-  if (grepl("^request_error|^http_404$|^http_410$|^http_301$|^http_302$", validation_reason)) return("resolution_failure")
-  if (grepl("^http_(401|403|429)$|timeout|access|forbidden", validation_reason, ignore.case = TRUE)) return("access_failure")
-  if (identical(validation_reason, "no_candidate_urls")) return("discovery_failure")
-  if (identical(validation_reason, "unsupported_response")) return("format_failure")
-  if (grepl("insufficient_text|no_reference_section|few_reference_markers|extraction", validation_reason, ignore.case = TRUE)) return("extraction_or_validation_failure")
-  if (bytes > 0L && !grepl("pdf|html|xml|text", content_type, ignore.case = TRUE)) return("format_failure")
-  "discovery_failure"
+.classify_discovery_failure <- function(r, reason = "") {
+  if (grepl("identity", reason, ignore.case = TRUE)) return("identity_failure")
+  if (identical(reason, "no_candidate_urls")) return("discovery_failure")
+  if (!is.na(r$status) && r$status %in% c(401L,403L,429L)) return("access_failure")
+  if (!is.na(r$status) && r$status %in% c(404L,410L,301L,302L)) return("resolution_failure")
+  if (grepl("pdf|html|xml", r$type, ignore.case = TRUE) && length(r$body) > 0L) return("extraction_or_validation_failure")
+  "format_failure"
 }
 
 additive_run_one <- function(row, out_dir, timeout_seconds = 30L) {
-  # First run the proven retriever exactly as-is.
+  # The baseline is authoritative and unchanged.
   baseline <- baseline_run_one(row, out_dir, timeout_seconds)
   status_col <- find_first_column(names(baseline), c("full_text_status", "status"))
   if (!is.null(status_col) && identical(as.character(baseline[[status_col]][1]), "verified_complete")) return(baseline)
 
   rid_col <- find_first_column(names(row), c("record_id", "id")); rid <- row[[rid_col]]
-  title_col <- find_first_column(names(row), c("title", "short_title", "title_normalised")); title <- if (!is.null(title_col)) row[[title_col]] else ""
-  doi_col <- find_first_column(names(row), c("doi")); doi <- if (!is.null(doi_col)) row[[doi_col]] else ""
+  title_col <- find_first_column(names(row), c("title", "short_title", "title_normalised")); title <- if (!is.null(title_col)) normalise(row[[title_col]]) else ""
+  doi_col <- find_first_column(names(row), c("doi")); doi <- if (!is.null(doi_col)) normalise(row[[doi_col]]) else ""
+  url_col <- find_first_column(names(row), c("url_raw", "url", "full_text_url", "source_url"))
+  seed_urls <- if (!is.null(url_col)) .unique_urls(unlist(lapply(row[[url_col]], .unique_urls))) else character()
+
+  # Stage 1: existing URLs and DOI locations, including landing-page expansion.
+  candidates <- list()
+  add_stage <- function(stage, urls) if (length(urls)) candidates[[stage]] <<- unique(candidates[[stage]], urls)
+  add_stage("existing_url", seed_urls)
+  if (nzchar(doi)) add_stage("doi", paste0("https://doi.org/", doi))
+  expanded <- unique(unlist(lapply(unique(unlist(candidates)), function(u) .landing_candidates(u, min(timeout_seconds, 40L))$urls)))
+  add_stage("landing_page", expanded)
+
+  # Stage 2: title-word discovery exactly as specified.
   title_words <- .normalise_title_words(title)
+  add_stage("google_pdf", .search_google(paste(title_words, "filetype:pdf")))
+  add_stage("google_scholar", .search_scholar(title_words))
+  add_stage("openalex", .openalex_candidates(title))
+  add_stage("other_resources", .other_api_candidates(title, doi))
 
-  # Stage-specific candidate sets. Keep provenance so we can calculate yield.
-  stages <- list(
-    google_pdf = .search_google(paste(title_words, "filetype:pdf")),
-    google_scholar = .search_scholar(title_words),
-    openalex = .openalex_candidates(title, doi),
-    other_resources = .other_api_candidates(title, doi)
-  )
-  candidates <- unique(unlist(lapply(names(stages), function(s) {
-    x <- stages[[s]]; if (!length(x)) return(character()); paste(s, x, sep = "||")
-  }), use.names = FALSE))
-
-  attempts <- list()
-  if (!length(candidates)) {
-    attempts[[1]] <- data.frame(record_id = rid, stage = "discovery", candidate_url = "", status = NA_integer_,
-      content_type = "", bytes = 0L, failure_category = "discovery_failure", reason = "no_candidate_urls", stringsAsFactors = FALSE)
+  rows <- list(); winner <- NULL
+  all_items <- unique(unlist(lapply(names(candidates), function(stage) paste(stage, candidates[[stage]], sep = "||")), use.names = FALSE))
+  if (!length(all_items)) {
+    rows[[1]] <- data.frame(record_id=rid, stage="discovery", candidate_url="", final_url="", status=NA_integer_, content_type="", bytes=0L, failure_category="discovery_failure", reason="no_candidate_urls", identity_score=NA_real_, stringsAsFactors=FALSE)
   }
-
-  winner <- NULL
-  for (item in candidates) {
-    sp <- strsplit(item, "||", fixed = TRUE)[[1]]; stage <- sp[[1]]; u <- sp[[2]]
-    if (!grepl("^https?://", u, ignore.case = TRUE)) next
-    r <- safe_request(u, timeout_seconds)
+  for (item in all_items) {
+    p <- strsplit(item, "||", fixed=TRUE)[[1]]; stage <- p[[1]]; u <- p[[2]]
+    r <- .discovery_request(u, max(timeout_seconds, 45L), binary=TRUE)
+    score <- NA_real_; reason <- if (!r$ok) if (is.na(r$status)) paste0("request_error: ", r$error) else paste0("http_", r$status) else ""
+    v <- NULL
     if (r$ok) {
-      v <- parse_response(r$body, r$type, r$final_url)
+      v <- tryCatch(parse_response(r$body, r$type, r$final_url), error=function(e) list(ok=FALSE, chars=0L, reference_markers=0L, reason=paste0("extraction: ", conditionMessage(e)), format="unknown", extension=".bin", parsed_text=""))
       score <- if (!is.null(v$parsed_text)) .identity_score(v$parsed_text, title) else 0
-      if (isTRUE(v$ok) && score < 0.15) {
-        v$ok <- FALSE; v$reason <- "identity_failure"
-      }
-    } else {
-      v <- list(ok = FALSE, chars = 0L, reference_markers = 0L, reason = if (is.na(r$status)) paste0("request_error: ", r$error) else paste0("http_", r$status), format = "unknown", parsed_text = "")
+      if (isTRUE(v$ok) && score < 0.15) { v$ok <- FALSE; v$reason <- "identity_failure" }
+      reason <- v$reason
     }
-    attempts[[length(attempts) + 1L]] <- data.frame(record_id = rid, stage = stage, candidate_url = u,
-      final_url = r$final_url, status = r$status, content_type = r$type, bytes = length(r$body),
-      failure_category = if (isTRUE(v$ok)) "success" else .classify_failure(r$status, r$type, v$reason, length(r$body)),
-      reason = v$reason, identity_score = if (exists("score")) score else NA_real_, stringsAsFactors = FALSE)
-    if (isTRUE(v$ok)) { winner <- list(response = r, validation = v); break }
+    category <- if (isTRUE(v$ok)) "success" else .classify_discovery_failure(r, reason)
+    rows[[length(rows)+1L]] <- data.frame(record_id=rid, stage=stage, candidate_url=u, final_url=r$final_url, status=r$status, content_type=r$type, bytes=length(r$body), failure_category=category, reason=reason, identity_score=score, stringsAsFactors=FALSE)
+    if (isTRUE(v$ok)) { winner <- list(response=r, validation=v); break }
   }
 
-  audit_dir <- file.path(out_dir, "audit"); dir.create(audit_dir, recursive = TRUE, showWarnings = FALSE)
-  audit <- do.call(rbind, attempts)
-  utils::write.csv(audit, file.path(audit_dir, paste0(rid, "_discovery_attempts.csv")), row.names = FALSE, na = "")
-
+  audit_dir <- file.path(out_dir, "audit"); dir.create(audit_dir, recursive=TRUE, showWarnings=FALSE)
+  utils::write.csv(do.call(rbind, rows), file.path(audit_dir, paste0(rid, "_discovery_attempts.csv")), row.names=FALSE, na="")
   if (is.null(winner)) return(baseline)
-  ext <- winner$validation$extension
-  dir.create(file.path(out_dir, "documents"), recursive = TRUE, showWarnings = FALSE)
-  dir.create(file.path(out_dir, "parsed"), recursive = TRUE, showWarnings = FALSE)
-  writeBin(winner$response$body, file.path(out_dir, "documents", paste0(rid, ext)))
-  writeLines(winner$validation$parsed_text, file.path(out_dir, "parsed", paste0(rid, ".txt")), useBytes = TRUE)
-  data.frame(record_id = rid, full_text_status = "verified_complete", format = winner$validation$format,
-             source_url = winner$response$final_url, text_chars = winner$validation$chars,
-             reference_markers = winner$validation$reference_markers, stringsAsFactors = FALSE)
+  dir.create(file.path(out_dir, "documents"), recursive=TRUE, showWarnings=FALSE)
+  dir.create(file.path(out_dir, "parsed"), recursive=TRUE, showWarnings=FALSE)
+  writeBin(winner$response$body, file.path(out_dir, "documents", paste0(rid, winner$validation$extension)))
+  writeLines(winner$validation$parsed_text, file.path(out_dir, "parsed", paste0(rid, ".txt")), useBytes=TRUE)
+  data.frame(record_id=rid, full_text_status="verified_complete", format=winner$validation$format, source_url=winner$response$final_url, text_chars=winner$validation$chars, reference_markers=winner$validation$reference_markers, stringsAsFactors=FALSE)
 }
