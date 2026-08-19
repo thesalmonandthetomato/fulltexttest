@@ -38,26 +38,29 @@ jobs:
         run: |
           set -eux
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl poppler-utils ca-certificates python3 python3-requests python3-bs4
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl poppler-utils ca-certificates git python3 python3-pip python3-requests python3-bs4
           Rscript --version
           curl --version
           python3 --version
           python3 -c 'import requests, bs4; print("requests", requests.__version__, "bs4", bs4.__version__)'
           pdftotext -v
+          python3 -m pip install --no-cache-dir --disable-pip-version-check git+https://github.com/computron/fulltext-article-downloader.git
+          fulltext-download --help >/dev/null
           Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org", quiet=TRUE); library(jsonlite); cat("jsonlite", as.character(packageVersion("jsonlite")), "\n")'
 
       - name: Parse-check active code
         run: |
           set -eux
           Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/R/additive_discovery_v4.R'); parse('retrieval/run.R')"
-          python3 -m py_compile retrieval/PYTHON/discovery_runner.py
+          python3 -m py_compile retrieval/PYTHON/discovery_runner.py retrieval/PYTHON/package_downloader.py
           test ! -e retrieval/R/discovery.R
           test ! -e retrieval/R/runtime_overrides.R
           test ! -e retrieval/R/discovery_network_overrides.R
           test ! -e retrieval/R/additive_discovery_v3.R
           test -e retrieval/R/additive_discovery_v4.R
           test -e retrieval/PYTHON/discovery_runner.py
-          echo 'Active retrieval implementation: fulltext.R + additive_discovery_v4.R + Python discovery'
+          test -e retrieval/PYTHON/package_downloader.py
+          echo 'Active retrieval implementation: direct retrieval + fulltext-article-downloader fallback + additive discovery'
 
       - name: Run clean retrieval
         env:
