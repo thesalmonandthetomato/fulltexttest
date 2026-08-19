@@ -1,7 +1,10 @@
 source("retrieval/R/fulltext.R")
-# Load the broader discovery layer after fulltext.R so its discover_search_urls()
-# implementation is used by run_one() without changing the established parser.
+# Load the broader discovery layer after fulltext.R.
 if (file.exists("retrieval/R/discovery.R")) source("retrieval/R/discovery.R")
+# Load shell-safe network helpers last so they override helpers in the
+# discovery/fulltext layers. This prevents URLs containing parentheses or
+# other shell metacharacters from reaching /bin/sh unquoted.
+if (file.exists("retrieval/R/runtime_overrides.R")) source("retrieval/R/runtime_overrides.R")
 
 args <- commandArgs(trailingOnly = TRUE)
 ids <- if (length(args)) args[[1]] else "__FIRST3__"
