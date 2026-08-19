@@ -11,7 +11,6 @@ dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
 master <- read_master("data/living_evidence_map_master.csv")
 if (ncol(master) < 7L) stop("Master database has fewer than 7 columns; cannot use column G as title")
-# Column G (7th column) is the authoritative master title.
 master[["title"]] <- normalise(master[[7L]])
 rid <- find_first_column(names(master), c("record_id", "id"))
 sel <- record_ids(master, ids)
@@ -19,7 +18,18 @@ if (!length(sel)) stop("No records selected")
 manifest <- master[match(sel, master[[rid]]), , drop = FALSE]
 utils::write.csv(data.frame(record_id = sel), file.path(out, "selection.csv"), row.names = FALSE, na = "")
 utils::write.csv(manifest, file.path(out, "selected_records.csv"), row.names = FALSE, na = "")
-results <- lapply(sel, function(id) run_one(master[master[[rid]] == id, , drop = FALSE][1, ], out))
+results <- lapply(sel, function(id) {
+  ans <- run_one(master[master[[rid]] == id, , drop = FALSE][1, ], out)
+  # Ensure every record contributes the same result schema, even when baseline
+  # returns an audit-only object or discovery returns a shortened result.
+  ans[["record_id"]] <- as.character(id)
+  ans
+})
+required <- c("record_id", "full_text_status", "format", "source_url", "text_chars", "reference_markers")
+results <- lapply(results, function(x) {
+  for (nm in setdiff(required, names(x))) x[[nm]] <- NA
+  x[required]
+})
 final <- do.call(rbind, results)
 utils::write.csv(final, file.path(out, "retrieval_status.csv"), row.names = FALSE, na = "")
 utils::write.csv(data.frame(record_id = sel, stringsAsFactors = FALSE), file.path(out, "completed_records.csv"), row.names = FALSE)
