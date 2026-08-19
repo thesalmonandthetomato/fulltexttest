@@ -26,7 +26,6 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-
       - name: Install runtime tools
         run: |
           set -eux
@@ -37,18 +36,16 @@ jobs:
           python3 -c 'import requests; print(requests.__version__)'
           Rscript -e 'library(jsonlite); cat("jsonlite", as.character(packageVersion("jsonlite")), "\n")'
           pdftotext -v
-
       - name: Parse-check active code
         run: |
           set -eux
-          Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/R/additive_discovery_v3.R'); parse('retrieval/run.R')"
+          Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/R/additive_discovery_v4.R'); parse('retrieval/run.R')"
           python3 -m py_compile retrieval/PYTHON/discovery_client.py
           test ! -e retrieval/R/discovery.R
           test ! -e retrieval/R/runtime_overrides.R
           test ! -e retrieval/R/discovery_network_overrides.R
-          test -e retrieval/R/additive_discovery_v3.R
+          test -e retrieval/R/additive_discovery_v4.R
           test -e retrieval/PYTHON/discovery_client.py
-
       - name: Run clean retrieval
         env:
           RECORD_IDS: ${{ inputs.record_ids }}
@@ -61,7 +58,6 @@ jobs:
           else
             Rscript retrieval/run.R
           fi
-
       - name: Upload retrieval artefacts
         uses: actions/upload-artifact@v4
         with:
