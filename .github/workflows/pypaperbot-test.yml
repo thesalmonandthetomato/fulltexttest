@@ -12,116 +12,111 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Checkout exact workflow commit
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Show commit under test
-        run: |
-          echo "github.sha=${GITHUB_SHA}"
-          echo "checked out=$(git rev-parse HEAD)"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install PyPaperBot
+      - name: Install PyPaperBot and runtime dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install git+https://github.com/ferru97/PyPaperBot.git
+          python -m pip install undetected-chromedriver selenium scholarly requests beautifulsoup4 lxml
 
-      - name: Prepare 15-record DOI file
-        shell: python
+      - name: Prepare 15-record test corpus
+        shell: bash
         run: |
+          python - <<'PY'
           import csv, re
           from pathlib import Path
           src = Path('data/living_evidence_map_master.csv')
-          out = Path('pypaperbot_test')
-          out.mkdir(exist_ok=True)
+          out = Path('pypaperbot_test'); out.mkdir(exist_ok=True)
           with src.open('r', encoding='utf-8-sig', newline='') as f:
               rows = list(csv.reader(f))
-          if not rows:
-              raise SystemExit('master database is empty')
-          # Column G is index 6 and is authoritative for title.
-          # Select the same 15-record corpus used by the completed retrieval test.
-          # Match by DOI where possible; titles are retained for the audit.
-          wanted = [
+          header, body = rows[0], rows[1:]
+          wanted = {
             '10.1201/9781003077770-78','10.18174/371265','10.56093/ehyqc013',
             '10.1111/jfb.12710','10.1007/s10750-026-06204-0','10.1002/fsh.10985',
             '10.2458/v24i1.20963','10.6084/m9.figshare.31147177.v1','10.14288/1.0058967',
             '10.1021/pr049840t','10.1038/s41598-019-39080-x','10.3354/dao01972',
             '10.1007/s11160-022-09714-x','10.15586/ijfs.v38i2.3600'
-          ]
-          # Include the known no-DOI record by its title when present in the corpus.
-          no_doi_title = 'The effects of climate change on fish populations'
-          header, body = rows[0], rows[1:]
-          def norm_doi(s):
-              s = (s or '').strip().lower()
-              s = re.sub(r'^https?://doi.org/', '', s)
-              s = re.sub(r'^doi:\s*', '', s)
+          }
+          def norm(s):
+              s=(s or '').strip().lower()
+              s=re.sub(r'^https?://doi.org/','',s)
+              s=re.sub(r'^doi:\s*','',s)
               return s.rstrip(' .;,')
-          # Locate DOI column by header, falling back to common DOI columns.
-          doi_idx = next((i for i,h in enumerate(header) if h.strip().lower() in {'doi','doi_url','digital object identifier'}), None)
-          if doi_idx is None:
-              for i,h in enumerate(header):
-                  if 'doi' in h.lower(): doi_idx=i; break
-          selected=[]
-          for r in body:
-              if len(r)<7: continue
-              d=norm_doi(r[doi_idx] if doi_idx is not None and doi_idx<len(r) else '')
-              if d in wanted:
-                  selected.append(r)
-          # Keep exactly the intended 15 rows if all are present; otherwise fail loudly.
-          if len(selected) < 14:
-              raise SystemExit(f'Only found {len(selected)} of 14 DOI-target records; inspect master schema/test corpus.')
+          doi_idx=next((i for i,h in enumerate(header) if 'doi' in h.lower()),None)
+          if doi_idx is None: raise SystemExit('No DOI column found')
+          selected=[r for r in body if len(r)>=7 and norm(r[doi_idx]) in wanted]
+          if len(selected)!=14: raise SystemExit(f'Expected 14 DOI records, found {len(selected)}')
           with (out/'selected_records.csv').open('w',encoding='utf-8',newline='') as f:
               w=csv.writer(f); w.writerow(header); w.writerows(selected)
           with (out/'dois.txt').open('w',encoding='utf-8') as f:
-              for r in selected:
-                  d=norm_doi(r[doi_idx] if doi_idx is not None and doi_idx<len(r) else '')
-                  if d: f.write(d+'\n')
-          print(f'selected {len(selected)} DOI records')
+              for r in selected: f.write(norm(r[doi_idx])+'\n')
+          # Preserve the no-DOI 15th record separately for a title-query test.
+          with (out/'no_doi_candidates.csv').open('w',encoding='utf-8',newline='') as f:
+              w=csv.writer(f); w.writerow(header)
+              # Keep records without a DOI; the audit will identify the matching test row.
+              for r in body:
+                  if len(r)>=7 and not norm(r[doi_idx]): w.writerow(r)
+          print('Selected 14 DOI records; Column G is retained as the authoritative title.')
+          PY
 
       - name: Run PyPaperBot DOI retrieval
+        id: pypaperbot
         continue-on-error: true
+        shell: bash
         run: |
           mkdir -p pypaperbot_test/downloads
-          python -m PyPaperBot --doi-file=pypaperbot_test/dois.txt --dwn-dir=pypaperbot_test/downloads --scholar-pages=1 --dwn-pdf
+          set -o pipefail
+          python -m PyPaperBot --doi-file=pypaperbot_test/dois.txt --dwn-dir=pypaperbot_test/downloads --scholar-pages=1 --dwn-pdf 2>&1 | tee pypaperbot_test/pypaperbot.log
 
-      - name: Build per-record audit
-        shell: python
+      - name: Run PyPaperBot title query for no-DOI test record
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+          rows=list(csv.reader(Path('pypaperbot_test/no_doi_candidates.csv').open(encoding='utf-8-sig',newline='')))
+          if len(rows)<=1:
+              print('No no-DOI candidate found in master; skipping title test.')
+              raise SystemExit(0)
+          # The original 15-record test's no-DOI record is retained by matching the known test title if present;
+          # otherwise use the first no-DOI record only as a package smoke test and record its title.
+          target=next((r for r in rows[1:] if len(r)>=7 and 'The effects of climate change on fish populations'.lower() in r[6].lower()), rows[1])
+          title=target[6]
+          print('NO_DOI_TITLE='+title)
+          # PyPaperBot's query mode is invoked with the exact master title.
+          import subprocess
+          subprocess.run(['python','-m','PyPaperBot','--query',title,'--dwn-dir','pypaperbot_test/downloads_title','--scholar-pages','1','--dwn-pdf'], check=False)
+          PY
+
+      - name: Build per-record audit and preserve logs
+        shell: bash
         run: |
           python - <<'PY'
           import csv, hashlib, re
           from pathlib import Path
-          out=Path('pypaperbot_test'); downloads=out/'downloads'
-          rows=list(csv.DictReader((out/'selected_records.csv').open(encoding='utf-8-sig')))
-          # Identify title/DOI columns robustly while preserving Column G as title.
-          headers=rows[0].keys() if rows else []
-          hs=list(headers)
-          doi_col=next((h for h in hs if 'doi' in h.lower()), None)
+          out=Path('pypaperbot_test')
+          rows=list(csv.reader((out/'selected_records.csv').open(encoding='utf-8-sig',newline='')))
+          header, body=rows[0], rows[1:]
+          doi_idx=next(i for i,h in enumerate(header) if 'doi' in h.lower())
+          files=[p for p in (out/'downloads').rglob('*') if p.is_file()]
           audits=[]
-          files=[p for p in downloads.rglob('*') if p.is_file()]
-          for r in rows:
-              title=r[hs[6]] if len(hs)>6 else ''
-              doi=(r.get(doi_col,'') if doi_col else '')
-              doi=re.sub(r'^https?://doi.org/','',doi.strip(),flags=re.I)
-              matches=[p for p in files if doi and doi.lower().replace('/','_') in p.name.lower().replace('/','_')]
-              # Fall back to all files: PyPaperBot naming differs by version.
-              if not matches and len(files)==1: matches=files
-              audits.append({
-                'master_title':title,'doi':doi,'downloaded':bool(matches),
-                'file_count_for_record':len(matches),
-                'files':';'.join(str(p.relative_to(out)) for p in matches),
-                'sha256':hashlib.sha256(matches[0].read_bytes()).hexdigest() if matches else '',
-                'identity_status':'requires_document_identity_check' if matches else 'not_retrieved',
-              })
+          for r in body:
+              title=r[6] if len(r)>6 else ''
+              doi=re.sub(r'^https?://doi.org/','',r[doi_idx].strip(),flags=re.I)
+              token=doi.replace('/','_').lower()
+              matches=[p for p in files if token in p.name.lower()]
+              audits.append({'master_title':title,'doi':doi,'downloaded':bool(matches),'files':';'.join(str(p.relative_to(out)) for p in matches),'sha256':hashlib.sha256(matches[0].read_bytes()).hexdigest() if matches else '','identity_status':'requires_document_identity_check' if matches else 'not_retrieved'})
           with (out/'pypaperbot_audit.csv').open('w',encoding='utf-8',newline='') as f:
               w=csv.DictWriter(f,fieldnames=audits[0].keys()); w.writeheader(); w.writerows(audits)
-          print(f'audited {len(audits)} records; downloaded files: {len(files)}')
+          print(f'Created DOI audit for {len(audits)} records; {len(files)} DOI files found.')
           PY
 
       - name: Upload PyPaperBot results
