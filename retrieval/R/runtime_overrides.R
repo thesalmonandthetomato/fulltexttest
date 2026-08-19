@@ -1,5 +1,5 @@
 # Runtime-safe replacements for network helpers.
-# All curl arguments are passed directly to system2(); no shell interpolation.
+# No search-page prose is ever passed to curl; only validated URL strings are.
 
 clean_discovered_url <- function(x) {
   x <- as.character(x)
@@ -10,12 +10,19 @@ clean_discovered_url <- function(x) {
   x <- gsub('\\\\u003a', ':', x, fixed = TRUE)
   x <- gsub('&amp;', '&', x, fixed = TRUE)
   x <- utils::URLdecode(x)
+  x <- trimws(x)
   x <- sub('[),.;]+$', '', x)
-  trimws(x)
+  # A URL candidate must be a single token. Reject embedded whitespace, quotes,
+  # HTML delimiters, control characters, and shell metacharacter fragments.
+  x[grepl('[[:space:]\"<>`\\r\\n]', x)] <- ''
+  x
 }
 
-# Extract only actual href targets. Never scan arbitrary search-page text:
-# author names/prose must not become curl candidates.
+valid_http_urls <- function(x) {
+  x <- clean_discovered_url(x)
+  x[nzchar(x) & grepl('^https?://[^/[:space:]]+', x, ignore.case = TRUE)]
+}
+
 html_href_urls <- function(txt) {
   if (!nzchar(txt)) return(character())
   hits <- regmatches(txt, gregexpr('(?i)href[[:space:]]*=[[:space:]]*["\\x27]([^"\\x27]+)["\\x27]', txt, perl = TRUE))[[1]]
@@ -23,7 +30,7 @@ html_href_urls <- function(txt) {
   vals <- sub('(?i)^href[[:space:]]*=[[:space:]]*["\\x27]', '', hits, perl = TRUE)
   vals <- sub('["\\x27]$', '', vals, perl = TRUE)
   vals <- vals[grepl('^https?://', vals, ignore.case = TRUE)]
-  unique(clean_discovered_url(vals))
+  valid_http_urls(vals)
 }
 
 json_urls <- function(txt, fields = c('url_for_pdf', 'pdf_url', 'landing_page_url', 'url', 'URL')) {
@@ -38,13 +45,14 @@ json_urls <- function(txt, fields = c('url_for_pdf', 'pdf_url', 'landing_page_ur
       out <- c(out, vals)
     }
   }
-  unique(clean_discovered_url(out[nzchar(out)]))
+  valid_http_urls(out)
 }
 
 safe_request <- function(url, timeout_seconds = 120L) {
   url <- clean_discovered_url(url)
-  if (!nzchar(url) || !grepl('^https?://', url, ignore.case = TRUE)) {
-    return(list(ok = FALSE, status = NA_integer_, type = '', body = raw(), final_url = url, error = 'invalid_url', elapsed = 0))
+  if (length(url) != 1L || !nzchar(url) || !grepl('^https?://[^/[:space:]]+', url, ignore.case = TRUE)) {
+    return(list(ok = FALSE, status = NA_integer_, type = '', body = raw(), final_url = url,
+                error = 'invalid_url', elapsed = 0))
   }
   started <- Sys.time(); tmp <- tempfile(fileext = '.bin'); hdr <- tempfile(fileext = '.headers')
   on.exit(unlink(c(tmp, hdr)), add = TRUE)
@@ -66,6 +74,8 @@ safe_request <- function(url, timeout_seconds = 120L) {
 }
 
 .discovery_curl <- function(url, timeout_seconds = 20L, tries = 2L) {
+  url <- valid_http_urls(url)
+  if (length(url) != 1L) return('')
   r <- safe_request(url, min(as.integer(timeout_seconds), 60L))
   if (isTRUE(r$ok) && length(r$body)) tryCatch(rawToChar(r$body), error = function(e) '') else ''
 }
@@ -83,7 +93,8 @@ discover_search_urls <- function(row, timeout_seconds = 30L) {
   queries <- c(paste0('"', title, '" filetype:pdf'), paste0('"', title, '" ', if (nzchar(authors)) authors else '', ' full text'))
   for (q in queries) {
     enc <- utils::URLencode(q, reserved = TRUE)
-    ddg <- .discovery_curl(paste0('https://html.duckduckgo.com/html/?q=', enc), min(timeout_seconds, 25L))
+    search_url <- paste0('https://html.duckduckgo.com/html/?q=', enc)
+    ddg <- .discovery_curl(search_url, min(timeout_seconds, 25L))
     if (nzchar(ddg)) {
       hrefs <- html_href_urls(ddg)
       hrefs <- hrefs[!grepl('duckduckgo\\.com|duck\\.co', hrefs, ignore.case = TRUE)]
@@ -102,6 +113,5 @@ discover_search_urls <- function(row, timeout_seconds = 30L) {
     out <- c(out, paste0('https://doi.org/', doi))
   }
 
-  out <- clean_discovered_url(out)
-  unique(out[nzchar(out) & grepl('^https?://', out, ignore.case = TRUE)])
+  valid_http_urls(out)
 }
