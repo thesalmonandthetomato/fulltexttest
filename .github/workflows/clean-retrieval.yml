@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: rocker/r-ver:4.4.2
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -49,7 +49,6 @@ jobs:
           if [ -n "$RECORD_IDS" ]; then
             Rscript retrieval/run.R "$RECORD_IDS"
           elif [ "${{ github.event_name }}" = "push" ]; then
-            # Comparison sample used to benchmark the expanded discovery layer.
             Rscript retrieval/run.R "75297,83519,055-629-277-091-173,76270,124-877-357-106-340,81717,196-416-367-489-015,73596,75538,111-570-422-900-084,78217,73558,80979,75855,82364"
           else
             Rscript retrieval/run.R
