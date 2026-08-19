@@ -17,9 +17,6 @@ on:
 permissions:
   contents: read
 
-# Retrieval runs must be serial. A newer commit cancels an older retrieval run,
-# preventing concurrent API traffic, misleading results, and obsolete runs
-# continuing after a new fix has been committed.
 concurrency:
   group: fulltext-retrieval
   cancel-in-progress: true
@@ -27,20 +24,28 @@ concurrency:
 jobs:
   retrieve:
     runs-on: ubuntu-22.04
-    container:
-      image: rocker/r-ver:4.4.2
     timeout-minutes: 45
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Verify exact source commit
+      - name: Verify exact and current source commit
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -eux
           echo "GITHUB_SHA=$GITHUB_SHA"
-          echo "github.sha=${{ github.sha }}"
-          test "$GITHUB_SHA" = "${{ github.sha }}"
-          echo "Triggering commit verified: $GITHUB_SHA"
+          echo "EXPECTED_SHA=$EXPECTED_SHA"
+          git rev-parse HEAD
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git fetch --no-tags origin main
+          MAIN_SHA=$(git rev-parse origin/main)
+          echo "Current origin/main SHA=$MAIN_SHA"
+          test "$EXPECTED_SHA" = "$MAIN_SHA"
+          echo "Verified current main commit: $EXPECTED_SHA"
 
       - name: Install runtime tools
         run: |
@@ -57,16 +62,6 @@ jobs:
           fulltext-download --help >/dev/null
           Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org", quiet=TRUE); library(jsonlite); cat("jsonlite", as.character(packageVersion("jsonlite")), "\n")'
 
-      - name: Verify current main before retrieval
-        run: |
-          set -eux
-          git fetch --no-tags --depth=1 origin main
-          MAIN_SHA=$(git rev-parse origin/main)
-          echo "GITHUB_SHA=$GITHUB_SHA"
-          echo "Current origin/main SHA=$MAIN_SHA"
-          test "$GITHUB_SHA" = "$MAIN_SHA"
-          echo "Current-main guard passed: $GITHUB_SHA"
-
       - name: Parse-check active code
         run: |
           set -eux
@@ -82,13 +77,18 @@ jobs:
           echo 'Active retrieval implementation: direct retrieval + fulltext-article-downloader fallback + targeted title discovery'
 
       - name: Re-check current main immediately before retrieval
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -eux
-          git fetch --no-tags --depth=1 origin main
+          git fetch --no-tags origin main
           MAIN_SHA=$(git rev-parse origin/main)
+          HEAD_SHA=$(git rev-parse HEAD)
           echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "HEAD_SHA=$HEAD_SHA"
           echo "Current origin/main SHA=$MAIN_SHA"
-          test "$GITHUB_SHA" = "$MAIN_SHA"
+          test "$HEAD_SHA" = "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$MAIN_SHA"
           echo 'Current-main guard passed immediately before retrieval.'
 
       - name: Run clean retrieval
