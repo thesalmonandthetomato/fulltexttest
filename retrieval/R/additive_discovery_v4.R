@@ -15,10 +15,10 @@
   py <- file.path(getwd(),"retrieval","PYTHON","discovery_runner.py")
   inp <- tempfile(); out <- tempfile(); on.exit(unlink(c(inp,out)),add=TRUE)
   writeLines(jsonlite::toJSON(list(url=url,timeout=timeout),auto_unbox=TRUE),inp,useBytes=TRUE)
-  started <- Sys.time(); exit <- suppressWarnings(system2("python3",py,stdin=inp,stdout=out,stderr=FALSE))
+  started <- Sys.time(); exit <- suppressWarnings(system2("python3",c(py),stdin=inp,stdout=out,stderr=FALSE))
   txt <- if(file.exists(out)) paste(readLines(out,warn=FALSE),collapse="") else ""
   r <- tryCatch(jsonlite::fromJSON(txt),error=function(e) NULL)
-  if(exit != 0L || is.null(r)) return(list(ok=FALSE,status=NA_integer_,type="",text="",final_url=url,error=paste0("python_exit_",exit),bytes=0,elapsed=as.numeric(difftime(Sys.time(),started,units="secs")),candidates=character()))
+  if(exit != 0L || is.null(r)) return(list(ok=FALSE,status=NA_integer_,type="",text="",final_url=url,error=paste0("python_exit_",exit),bytes=0L,elapsed=as.numeric(difftime(Sys.time(),started,units="secs")),candidates=character()))
   r$elapsed <- as.numeric(difftime(Sys.time(),started,units="secs")); r
 }
 .v4_hrefs <- function(html,base="") {
@@ -34,6 +34,18 @@
 .v4_api <- function(text, fields) { out<-character(); for(f in fields){m<-regmatches(text,gregexpr(paste0('"',f,'"[[:space:]]*:[[:space:]]*"(https?:[^"\\r\\n]+)"'),text,perl=TRUE))[[1]]; if(length(m)) out<-c(out,sub(paste0('^"',f,'"[[:space:]]*:[[:space:]]*"'),' ',sub('"$','',m),perl=TRUE))}; .v4_urls(utils::URLdecode(out)) }
 .v4_one <- function(stage,q,url,parser=function(x) character(),timeout=30L) { r<-.v4_http(url,timeout); urls<-if(length(r$candidates)) r$candidates else if(isTRUE(r$ok)) parser(r$text) else character(); list(stage=stage,query=q,url=url,r=r,urls=urls) }
 .v4_cat <- function(r,n) if(n) "candidate_found" else if(!is.null(r$status)&&!is.na(r$status)&&r$status%in%c(401,403,429)) "access_failure" else if(!is.null(r$status)&&!is.na(r$status)&&r$status%in%c(404,410)) "resolution_failure" else if(nzchar(r$error%||%"")) "transport_failure" else "discovery_failure"
+.v4_audit_row <- function(rid,title,j) {
+  data.frame(record_id=rid,title_used=title,stage=j$stage,query=j$query,request_url=j$url,
+             status=if(is.null(j$r$status)) NA_integer_ else j$r$status,
+             content_type=if(is.null(j$r$type)) "" else j$r$type,
+             bytes=if(is.null(j$r$bytes)) 0L else j$r$bytes,
+             candidate_count=length(j$urls),
+             failure_category=.v4_cat(j$r,length(j$urls)),
+             reason=if(length(j$urls)) "candidate_found" else if(isTRUE(j$r$ok)) "no_candidates" else paste0("http_",j$r$status),
+             error=if(is.null(j$r$error)) "" else j$r$error,
+             elapsed_seconds=if(is.null(j$r$elapsed)) NA_real_ else j$r$elapsed,
+             stringsAsFactors=FALSE)
+}
 
 additive_run_one <- function(row,out_dir,timeout_seconds=30L) {
   baseline <- baseline_run_one(row,out_dir,timeout_seconds)
@@ -51,7 +63,7 @@ additive_run_one <- function(row,out_dir,timeout_seconds=30L) {
   seeds <- head(.v4_urls(unlist(lapply(unname(row),.v4_urls),use.names=FALSE)),20L)
   for(u in seeds) jobs[[length(jobs)+1L]] <- .v4_one("landing_page","",u,.v4_hrefs,40L)
   candidates <- head(unique(.v4_urls(unlist(lapply(jobs,function(j)j$urls),use.names=FALSE))),50L)
-  audit <- do.call(rbind,lapply(jobs,function(j)data.frame(record_id=rid,title_used=title,stage=j$stage,query=j$query,request_url=j$url,status=j$r$status,content_type=j$r$type,bytes=j$r$bytes,candidate_count=length(j$urls),failure_category=.v4_cat(j$r,length(j$urls)),reason=if(length(j$urls))"candidate_found"else if(isTRUE(j$r$ok))"no_candidates"else paste0("http_",j$r$status),error=j$r$error,elapsed_seconds=j$r$elapsed,stringsAsFactors=FALSE)))
+  audit <- do.call(rbind,lapply(jobs,function(j).v4_audit_row(rid,title,j)))
   dir.create(file.path(out_dir,"audit"),recursive=TRUE,showWarnings=FALSE); utils::write.csv(audit,file.path(out_dir,"audit",paste0(rid,"_discovery_attempts.csv")),row.names=FALSE,na="")
   if(!length(candidates)) return(baseline)
   augmented <- row; augmented$discovered_urls <- paste(candidates,collapse=" "); result <- baseline_run_one(augmented,out_dir,max(timeout_seconds,60L)); result$discovery_candidates <- length(candidates); result$discovery_title_used <- title; result
