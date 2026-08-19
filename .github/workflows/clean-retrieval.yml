@@ -44,7 +44,7 @@ jobs:
           python3 --version
           python3 -c 'import requests, bs4; print("requests", requests.__version__, "bs4", bs4.__version__)'
           pdftotext -v
-          python3 -m pip install --break-system-packages --no-cache-dir --disable-pip-version-check git+https://github.com/computron/fulltext-article-downloader.git
+          python3 -m pip install --break-system-packages --ignore-installed --no-cache-dir --disable-pip-version-check git+https://github.com/computron/fulltext-article-downloader.git
           fulltext-download --help >/dev/null
           Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org", quiet=TRUE); library(jsonlite); cat("jsonlite", as.character(packageVersion("jsonlite")), "\n")'
 
@@ -60,7 +60,7 @@ jobs:
           test -e retrieval/R/additive_discovery_v4.R
           test -e retrieval/PYTHON/discovery_runner.py
           test -e retrieval/PYTHON/package_downloader.py
-          echo 'Active retrieval implementation: direct retrieval + fulltext-article-downloader fallback + additive discovery'
+          echo 'Active retrieval implementation: direct retrieval + fulltext-article-downloader fallback + targeted title discovery'
 
       - name: Run clean retrieval
         env:
