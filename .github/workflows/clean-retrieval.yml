@@ -34,22 +34,13 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Verify exact and current source commit
+      - name: Verify exact source commit
         run: |
           set -eux
           echo "GITHUB_SHA=$GITHUB_SHA"
           echo "github.sha=${{ github.sha }}"
-          echo "Checked-out source SHA=$(git rev-parse HEAD)"
           test "$GITHUB_SHA" = "${{ github.sha }}"
-
-          # A run manually started from an older commit must not proceed after
-          # main has moved on. This makes historical/stale workflow runs fail
-          # before they can touch retrieval services.
-          git fetch --no-tags --depth=1 origin main
-          MAIN_SHA=$(git rev-parse origin/main)
-          echo "Current origin/main SHA=$MAIN_SHA"
-          test "$GITHUB_SHA" = "$MAIN_SHA"
-          echo "Verified workflow is running the current main commit: $GITHUB_SHA"
+          echo "Triggering commit verified: $GITHUB_SHA"
 
       - name: Install runtime tools
         run: |
@@ -66,6 +57,16 @@ jobs:
           fulltext-download --help >/dev/null
           Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org", quiet=TRUE); library(jsonlite); cat("jsonlite", as.character(packageVersion("jsonlite")), "\n")'
 
+      - name: Verify current main before retrieval
+        run: |
+          set -eux
+          git fetch --no-tags --depth=1 origin main
+          MAIN_SHA=$(git rev-parse origin/main)
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "Current origin/main SHA=$MAIN_SHA"
+          test "$GITHUB_SHA" = "$MAIN_SHA"
+          echo "Current-main guard passed: $GITHUB_SHA"
+
       - name: Parse-check active code
         run: |
           set -eux
@@ -80,7 +81,7 @@ jobs:
           test -e retrieval/PYTHON/package_downloader.py
           echo 'Active retrieval implementation: direct retrieval + fulltext-article-downloader fallback + targeted title discovery'
 
-      - name: Re-check current main before retrieval
+      - name: Re-check current main immediately before retrieval
         run: |
           set -eux
           git fetch --no-tags --depth=1 origin main
