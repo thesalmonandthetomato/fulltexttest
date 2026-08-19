@@ -46,11 +46,46 @@
              elapsed_seconds=if(is.null(j$r$elapsed)) NA_real_ else j$r$elapsed,
              stringsAsFactors=FALSE)
 }
+.v4_package_download <- function(doi, rid, out_dir, timeout=180L) {
+  py <- file.path(getwd(),"retrieval","PYTHON","package_downloader.py")
+  if(!nzchar(doi) || !file.exists(py)) return(list(ok=FALSE,error="package_runner_unavailable",path="",log=""))
+  d <- file.path(out_dir,"package_fallback",as.character(rid)); dir.create(d,recursive=TRUE,showWarnings=FALSE)
+  inp <- tempfile(); out <- tempfile(); on.exit(unlink(c(inp,out)),add=TRUE)
+  writeLines(jsonlite::toJSON(list(doi=doi,output_dir=normalizePath(d,mustWork=FALSE),timeout=timeout),auto_unbox=TRUE),inp,useBytes=TRUE)
+  exit <- suppressWarnings(system2("python3",py,stdin=inp,stdout=out,stderr=FALSE))
+  txt <- if(file.exists(out)) paste(readLines(out,warn=FALSE),collapse="") else ""
+  r <- tryCatch(jsonlite::fromJSON(txt),error=function(e) NULL)
+  if(exit != 0L || is.null(r) || !isTRUE(r$ok) || !nzchar(r$path)) return(list(ok=FALSE,error=if(is.null(r)) paste0("python_exit_",exit) else as.character(r$error),path="",log=if(is.null(r)) "" else as.character(r$log)))
+  list(ok=TRUE,path=as.character(r$path),log=as.character(r$log),error="")
+}
 
 additive_run_one <- function(row,out_dir,timeout_seconds=30L) {
   baseline <- baseline_run_one(row,out_dir,timeout_seconds)
   sc <- find_first_column(names(baseline),c("full_text_status","status")); if(!is.null(sc)&&identical(as.character(baseline[[sc]][1]),"verified_complete")) return(baseline)
   ridc <- find_first_column(names(row),c("record_id","id")); rid <- row[[ridc]][1]; title <- if("title"%in%names(row)) .v4_title(row[["title"]][1]) else ""; doi_c <- find_first_column(names(row),c("doi")); doi <- if(!is.null(doi_c)) normalise(row[[doi_c]][1]) else ""
+
+  # DOI fallback: use fulltext-article-downloader only after direct DOI/URL retrieval fails.
+  if(nzchar(doi)) {
+    pf <- .v4_package_download(doi,rid,out_dir,max(180L,timeout_seconds*4L))
+    if(isTRUE(pf$ok) && file.exists(pf$path)) {
+      raw <- tryCatch(readBin(pf$path,"raw",n=file.info(pf$path)$size),error=function(e) raw())
+      ct <- if(grepl("\\.pdf$",pf$path,ignore.case=TRUE)) "application/pdf" else if(grepl("\\.xml$",pf$path,ignore.case=TRUE)) "application/xml" else "text/html"
+      v <- tryCatch(parse_response(raw,ct,pf$path,title,doi),error=function(e) NULL)
+      dir.create(file.path(out_dir,"audit"),recursive=TRUE,showWarnings=FALSE)
+      if(!is.null(v) && isTRUE(v$ok)) {
+        ext <- v$extension %||% ".pdf"
+        doc <- file.path(out_dir,"documents",paste0(rid,"_package",ext)); file.copy(pf$path,doc,overwrite=TRUE)
+        writeLines(v$parsed_text,file.path(out_dir,"parsed",paste0(rid,".txt")),useBytes=TRUE)
+        utils::write.csv(data.frame(record_id=rid,expected_title=title,expected_doi=doi,stage="fulltext_article_downloader",request_url=paste0("doi:",doi),status=200L,content_type=ct,bytes=length(raw),candidate_count=1L,failure_category="candidate_found",reason="package_identity_and_content_verified",error="",elapsed_seconds=NA_real_,identity_method=v$identity_method,identity_score=v$identity_score,observed_title=v$observed_title,observed_doi=v$observed_doi,stringsAsFactors=FALSE),file.path(out_dir,"audit",paste0(rid,"_package_fallback.csv")),row.names=FALSE,na="")
+        return(data.frame(record_id=rid,full_text_status="verified_complete",format=v$format,source_url=paste0("package:fulltext-article-downloader:",doi),text_chars=v$chars,reference_markers=v$reference_markers,stringsAsFactors=FALSE))
+      }
+      utils::write.csv(data.frame(record_id=rid,expected_title=title,expected_doi=doi,stage="fulltext_article_downloader",request_url=paste0("doi:",doi),status=NA_integer_,content_type=ct,bytes=length(raw),candidate_count=1L,failure_category="wrong_document_or_incomplete",reason=if(is.null(v))"parse_failure" else v$reason,error="identity/content gate rejected package output",elapsed_seconds=NA_real_,identity_method=if(is.null(v))"none"else v$identity_method,identity_score=if(is.null(v))0 else v$identity_score,observed_title=if(is.null(v))""else v$observed_title,observed_doi=if(is.null(v))""else v$observed_doi,stringsAsFactors=FALSE),file.path(out_dir,"audit",paste0(rid,"_package_fallback.csv")),row.names=FALSE,na="")
+    } else {
+      dir.create(file.path(out_dir,"audit"),recursive=TRUE,showWarnings=FALSE)
+      utils::write.csv(data.frame(record_id=rid,expected_title=title,expected_doi=doi,stage="fulltext_article_downloader",request_url=paste0("doi:",doi),status=NA_integer_,content_type="",bytes=0L,candidate_count=0L,failure_category="package_failure",reason=pf$error,error=pf$log,elapsed_seconds=NA_real_,stringsAsFactors=FALSE),file.path(out_dir,"audit",paste0(rid,"_package_fallback.csv")),row.names=FALSE,na="")
+    }
+  }
+
   q <- .v4_title(title); enc <- utils::URLencode(q,reserved=TRUE); encpdf <- utils::URLencode(paste(q,"filetype:pdf"),reserved=TRUE)
   jobs <- list(
     .v4_one("google_pdf_search",paste(q,"filetype:pdf"),paste0("https://www.google.com/search?q=",encpdf,"&num=10"),.v4_google),
