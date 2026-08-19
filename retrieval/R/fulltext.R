@@ -15,17 +15,19 @@ find_first_column <- function(nms, candidates) {
 
 read_master <- function(path) {
   if (!file.exists(path)) stop("Master file not found: ", path)
-  lines <- readLines(path, encoding = "UTF-8", warn = FALSE)
-  if (!length(lines)) stop("Master file is empty")
-  header <- strsplit(lines[[1]], ",", fixed = TRUE)[[1]]
-  ncol_expected <- length(header)
-  bad <- integer()
-  for (i in seq_along(lines)[-1]) {
-    fields <- strsplit(lines[[i]], ",", fixed = TRUE)[[1]]
-    if (length(fields) != ncol_expected) bad <- c(bad, i)
-  }
-  if (length(bad)) stop("Structural CSV issue: inconsistent field count at rows ", paste(head(bad, 20), collapse = ","))
-  out <- utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE, colClasses = "character", quote = "\"", na.strings = character())
+  out <- utils::read.csv(
+    path,
+    header = TRUE,
+    stringsAsFactors = FALSE,
+    check.names = FALSE,
+    colClasses = "character",
+    quote = "\"",
+    na.strings = character(),
+    comment.char = "",
+    fill = FALSE,
+    strip.white = FALSE
+  )
+  if (!nrow(out) || !ncol(out)) stop("Master file contains no parsed records")
   out[] <- lapply(out, normalise)
   out
 }
@@ -37,9 +39,10 @@ record_ids <- function(df, ids = "__FIRST3__") {
     doi_col <- find_first_column(names(df), c("doi"))
     url_col <- find_first_column(names(df), c("url_raw", "url", "full_text_url", "source_url"))
     eligible <- nzchar(df[[rid_col]])
-    if (!is.null(doi_col)) eligible <- eligible | nzchar(df[[doi_col]])
+    if (!is.null(doi_col)) eligible <- eligible & nzchar(df[[doi_col]])
     if (!is.null(url_col)) eligible <- eligible | nzchar(df[[url_col]])
-    return(df[[rid_col]][which(eligible)[seq_len(min(3L, sum(eligible)))]])
+    idx <- which(eligible)
+    return(df[[rid_col]][idx[seq_len(min(3L, length(idx)))]])
   }
   requested <- trimws(strsplit(ids, ",", fixed = TRUE)[[1]])
   requested[requested %in% df[[rid_col]]]
@@ -47,7 +50,6 @@ record_ids <- function(df, ids = "__FIRST3__") {
 
 candidate_urls <- function(row) {
   nms <- names(row)
-  rid <- find_first_column(nms, c("record_id", "id"))
   doi <- find_first_column(nms, c("doi"))
   urls <- find_first_column(nms, c("url_raw", "url", "full_text_url", "source_url"))
   out <- character()
@@ -87,7 +89,7 @@ validate_text <- function(text, format) {
   text <- gsub("\\s+", " ", text, perl = TRUE)
   lower <- tolower(text)
   refs <- regexpr("\\b(references|bibliography|literature cited)\\b", lower, perl = TRUE)[1] > 0
-  reference_markers <- lengths(regmatches(text, gregexpr("(?:\\[[0-9]{1,3}\\]|(?:^|\\s)[0-9]{1,3}\\.)", text, perl = TRUE)))
+  reference_markers <- sum(lengths(regmatches(text, gregexpr("(?:\\[[0-9]{1,3}\\]|(?:^|\\s)[0-9]{1,3}\\.)", text, perl = TRUE))))
   chars <- nchar(text)
   ok <- chars >= 5000 && refs && reference_markers >= 3
   reason <- if (chars < 5000) "insufficient_text" else if (!refs) "no_reference_section" else if (reference_markers < 3) "few_reference_markers" else "complete"
