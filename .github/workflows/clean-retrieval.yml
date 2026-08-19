@@ -39,7 +39,7 @@ jobs:
       - name: Parse-check clean R code
         run: |
           set -eux
-          Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/run.R')"
+          Rscript -e "parse('retrieval/R/fulltext.R'); parse('retrieval/R/discovery.R'); parse('retrieval/run.R')"
 
       - name: Run clean retrieval
         env:
@@ -48,6 +48,9 @@ jobs:
           set -eux
           if [ -n "$RECORD_IDS" ]; then
             Rscript retrieval/run.R "$RECORD_IDS"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            # Comparison sample used to benchmark the expanded discovery layer.
+            Rscript retrieval/run.R "75297,83519,055-629-277-091-173,76270,124-877-357-106-340,81717,196-416-367-489-015,73596,75538,111-570-422-900-084,78217,73558,80979,75855,82364"
           else
             Rscript retrieval/run.R
           fi
