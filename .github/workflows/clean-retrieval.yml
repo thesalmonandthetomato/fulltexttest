@@ -38,11 +38,13 @@ jobs:
         run: |
           set -eux
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends poppler-utils ca-certificates python3 python3-requests
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl poppler-utils ca-certificates python3 python3-requests
           Rscript --version
+          curl --version
           python3 --version
           python3 -c 'import requests; print(requests.__version__)'
           pdftotext -v
+          Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org", quiet=TRUE); library(jsonlite); cat("jsonlite", as.character(packageVersion("jsonlite")), "\n")'
 
       - name: Parse-check active code
         run: |
