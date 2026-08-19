@@ -4,6 +4,8 @@ source("retrieval/R/fulltext.R")
 # runs after the baseline has failed.
 baseline_run_one <- run_one
 if (file.exists("retrieval/R/additive_discovery.R")) source("retrieval/R/additive_discovery.R")
+# Replace only the discovery network boundary; the baseline remains untouched.
+if (file.exists("retrieval/R/discovery_network_overrides.R")) source("retrieval/R/discovery_network_overrides.R")
 run_one <- additive_run_one
 
 args <- commandArgs(trailingOnly = TRUE)
