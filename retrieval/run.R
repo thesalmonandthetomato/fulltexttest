@@ -1,8 +1,6 @@
 source("retrieval/R/fulltext.R")
-# Load the broader discovery layer after fulltext.R.
-if (file.exists("retrieval/R/discovery.R")) source("retrieval/R/discovery.R")
-# Load the clean runtime implementation last. This file contains the authoritative
-# run_one()/discover_search_urls()/safe_request() stack used in Actions.
+# The legacy discovery.R is intentionally not sourced. Its search/curl path is
+# superseded by runtime_overrides.R and was the source of malformed candidates.
 if (file.exists("retrieval/R/runtime_overrides.R")) source("retrieval/R/runtime_overrides.R")
 
 args <- commandArgs(trailingOnly = TRUE)
