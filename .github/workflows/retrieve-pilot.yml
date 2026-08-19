@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   retrieve:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
       - name: Checkout exact commit
@@ -32,13 +32,14 @@ jobs:
           set -euo pipefail
           command -v Rscript
           Rscript --version
+          Rscript -e "cat(as.character(getRversion()), '\\n')"
           Rscript -e "stopifnot(getRversion() >= '4.3.0')"
 
       - name: Install system dependencies
         run: |
           set -euo pipefail
-          sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends poppler-utils libcurl4-openssl-dev libssl-dev libxml2-dev pkg-config
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils libcurl4-openssl-dev libssl-dev libxml2-dev pkg-config
 
       - name: Verify system dependencies
         run: |
@@ -49,21 +50,21 @@ jobs:
 
       - name: Install R packages from CRAN
         env:
-          R_DEFAULT_PACKAGES: null
+          R_DEFAULT_PACKAGES: "utils,methods,stats,graphics,grDevices,datasets"
         run: |
           set -euo pipefail
-          Rscript -e "options(timeout=300); repos <- c(CRAN='https://cloud.r-project.org'); install.packages(c('readr','httr2','jsonlite'), repos=repos, dependencies=c('Depends','Imports'))"
+          Rscript -e "options(timeout=300); install.packages(c('readr','httr2','jsonlite'), repos='https://cloud.r-project.org', type='source', Ncpus=2)"
           Rscript -e "stopifnot(requireNamespace('readr', quietly=TRUE), requireNamespace('httr2', quietly=TRUE), requireNamespace('jsonlite', quietly=TRUE))"
 
       - name: Parse-check retrieval code
         run: |
           set -euo pipefail
-          Rscript -e "files <- c('R/check_dataset.R','R/retrieval.R','scripts/run_retrieval.R'); for (f in files) parse(f)"
+          Rscript -e "files <- c('R/check_dataset.R','R/retrieval.R','scripts/run_retrieval.R'); for (f in files) { parse(f); cat('OK:', f, '\\n') }"
 
       - name: Validate master dataset
         run: |
           set -euo pipefail
-          Rscript -e "source('R/check_dataset.R'); check_dataset('data/living_evidence_map_master.csv')"
+          Rscript -e "source('R/check_dataset.R'); x <- check_dataset('data/living_evidence_map_master.csv'); cat('Records:', nrow(x), '\\n'); cat('Columns:', ncol(x), '\\n')"
 
       - name: Resolve pilot selection
         env:
