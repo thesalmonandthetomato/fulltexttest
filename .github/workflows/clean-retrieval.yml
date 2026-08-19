@@ -27,6 +27,13 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Verify exact source commit
+        run: |
+          set -eux
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          test "$GITHUB_SHA" = "${{ github.sha }}"
+          echo "Verified workflow is running the triggering commit: $GITHUB_SHA"
+
       - name: Install runtime tools
         run: |
           set -eux
