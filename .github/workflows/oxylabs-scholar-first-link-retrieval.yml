@@ -44,9 +44,6 @@ jobs:
           )
           r.raise_for_status()
           response = r.json()
-
-          # Oxylabs returns the raw Google Scholar page in the result's content field.
-          # Keep the whole API response for auditability, then parse the returned content.
           (OUT / 'oxylabs_response.json').write_text(
               json.dumps(response, indent=2, ensure_ascii=False), encoding='utf-8'
           )
@@ -135,9 +132,7 @@ jobs:
               path.write_bytes(fr.content)
               meta.update({'representation': 'OTHER', 'parseable': False})
 
-          (OUT / 'retrieval.json').write_text(
-              json.dumps(meta, indent=2, ensure_ascii=False), encoding='utf-8'
-          )
+          (OUT / 'retrieval.json').write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding='utf-8')
           print(json.dumps(meta, indent=2))
 
       - name: Upload retrieval audit and full text
