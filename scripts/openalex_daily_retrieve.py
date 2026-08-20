@@ -6,26 +6,28 @@ from lxml import etree
 from pypdf import PdfReader
 
 FULLTEXT_TARGET = 100
-OPENALEX_CONTENT_LIMIT = 100
+BATCH_SIZE = 100
 MANIFEST = Path('data/living_evidence_map_master.csv')
 STATE = Path('data/openalex_free_state.json')
 STAGE = Path('daily_openalex_batch')
 STAGE.mkdir(exist_ok=True)
 
 session = requests.Session()
-session.headers['User-Agent'] = 'fulltexttest/openalex-free-daily/3.0'
+session.headers['User-Agent'] = 'fulltexttest/openalex-external-oa/4.0'
+
 
 def log(msg):
     print(f'PROGRESS: {msg}', flush=True)
 
+
 def norm(doi):
     return re.sub(r'^(?:https?://doi.org/|doi:)', '', doi.strip(), flags=re.I).rstrip(' .;,').lower()
 
+
 def request(method, url, **kwargs):
-    # Hard bound: no individual HTTP operation can hold the job indefinitely.
     kwargs.setdefault('timeout', (10, 30))
     for attempt in range(4):
-        log(f'HTTP {method} {url[:160]} (attempt {attempt+1}/4)')
+        log(f'HTTP {method} {url[:180]} (attempt {attempt + 1}/4)')
         try:
             r = session.request(method, url, allow_redirects=True, **kwargs)
         except Exception as e:
@@ -45,6 +47,7 @@ def request(method, url, **kwargs):
         time.sleep(delay)
     return None
 
+
 def parse_pdf(data):
     p = Path('/tmp/fulltexttest.pdf')
     p.write_bytes(data)
@@ -54,11 +57,8 @@ def parse_pdf(data):
     finally:
         p.unlink(missing_ok=True)
 
-def parse_xml(data):
-    root = etree.fromstring(data)
-    return '\n'.join(' '.join(''.join(n.itertext()).split()) for n in root.xpath('//*[local-name()="body"]')).strip()
 
-def store(doi, work, source, url, data, content_type):
+def store(input_doi, work, source, url, data, content_type):
     raw = gzip.decompress(data) if data[:2] == b'\x1f\x8b' else data
     ct = (content_type or '').lower()
     try:
@@ -67,41 +67,63 @@ def store(doi, work, source, url, data, content_type):
             if len(text) < 3000:
                 return None, 'pdf_parse_failure'
             ext, fmt, stored_bytes = 'pdf.gz', 'pdf', gzip.compress(raw, 6)
-        elif 'xml' in ct or raw.lstrip().startswith(b'<?xml') or b'<TEI' in raw[:1000]:
-            text = parse_xml(raw)
-            if len(text) < 3000:
-                return None, 'xml_parse_failure'
-            ext, fmt, stored_bytes = 'xml.gz', 'xml', gzip.compress(raw, 6)
         else:
-            return None, 'unsupported_content_type'
+            return None, 'not_pdf'
     except Exception as e:
         return None, f'parse_error:{type(e).__name__}'
+
+    openalex_doi = work.get('doi') or ''
     checksum = hashlib.sha256(raw).hexdigest()
-    slug = hashlib.sha256(doi.encode()).hexdigest()[:20]
+    slug = hashlib.sha256(input_doi.encode()).hexdigest()[:20]
     dest = STAGE / slug
     dest.mkdir(parents=True, exist_ok=True)
     (dest / f'fulltext.{ext}').write_bytes(stored_bytes)
+
     audit = {
-        'doi': doi, 'openalex_id': work.get('id'), 'title': work.get('display_name'),
-        'publication_year': work.get('publication_year'), 'type': work.get('type'),
-        'open_access': work.get('open_access'), 'best_oa_location': work.get('best_oa_location'),
-        'locations': work.get('locations', []), 'has_content': work.get('has_content') or {},
-        'source': source, 'source_url': url,
+        'input_doi': input_doi,
+        'openalex_doi': openalex_doi,
+        'doi_match': norm(openalex_doi) == input_doi,
+        'openalex_id': work.get('id'),
+        'title': work.get('display_name'),
+        'publication_year': work.get('publication_year'),
+        'type': work.get('type'),
+        'open_access': work.get('open_access'),
+        'best_oa_location': work.get('best_oa_location'),
+        'locations': work.get('locations', []),
+        'has_content': work.get('has_content') or {},
+        'source': source,
+        'source_url': url,
         'retrieved_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'text_chars': len(text), 'sha256': checksum, 'format': fmt
+        'text_chars': len(text),
+        'sha256': checksum,
+        'format': fmt,
     }
     (dest / 'metadata.json').write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding='utf-8')
-    return {'doi': doi, 'openalex_id': work.get('id'), 'format': fmt, 'text_chars': len(text), 'sha256': checksum, 'source': source, 'source_url': url}, None
+    return {
+        'input_doi': input_doi,
+        'openalex_doi': openalex_doi,
+        'doi_match': True,
+        'openalex_id': work.get('id'),
+        'format': fmt,
+        'text_chars': len(text),
+        'sha256': checksum,
+        'source': source,
+        'source_url': url,
+    }, None
 
-def try_content(doi, work, source, url):
-    if not url or not str(url).startswith('http'):
-        return None, 'invalid_url'
-    r = request('GET', url)
+
+def download_external_pdf(input_doi, work, pdf_url):
+    if not pdf_url or not str(pdf_url).startswith('http'):
+        return None, 'invalid_pdf_url'
+    log(f'PDF DOWNLOAD input={input_doi} openalex={work.get("doi")} url={pdf_url}')
+    r = request('GET', pdf_url)
     if r is None:
-        return None, 'request_failed'
+        return None, 'pdf_request_failed'
     if not r.ok or not r.content:
-        return None, f'http_{r.status_code}'
-    return store(doi, work, source, r.url, r.content, r.headers.get('content-type', ''))
+        return None, f'pdf_http_{r.status_code}'
+    result, error = store(input_doi, work, 'OpenAlex-discovered external OA PDF', r.url, r.content, r.headers.get('content-type', ''))
+    return result, error
+
 
 key = os.environ.get('OPENALEX_API_KEY')
 token = os.environ.get('ZENODO_TOKEN')
@@ -119,108 +141,125 @@ with MANIFEST.open(newline='', encoding='utf-8') as f:
         if doi and doi not in completed:
             rows.append(doi)
 
-log(f'START queue={len(rows)} target_fulltexts={FULLTEXT_TARGET} openalex_content_limit={OPENALEX_CONTENT_LIMIT}')
-successes, failures = [], []
-content_requests = 0
+log(f'START queue={len(rows)} target_fulltexts={FULLTEXT_TARGET} openalex_content_downloads=0')
+successes, failures, pdf_manifest = [], [], []
 start = time.time()
 
-for index, doi in enumerate(rows, 1):
+for batch_start in range(0, len(rows), BATCH_SIZE):
     if len(successes) >= FULLTEXT_TARGET:
         break
-    log(f'DOI {index}/{len(rows)} | successes={len(successes)}/{FULLTEXT_TARGET} | openalex_content={content_requests}/{OPENALEX_CONTENT_LIMIT} | {doi}')
-    try:
-        meta_url = 'https://api.openalex.org/works/https://doi.org/' + quote(doi, safe='')
-        log(f'METADATA {doi}')
-        r = request('GET', meta_url, params={'api_key': key})
-        if r is None or not r.ok:
-            status = 'metadata_request_failed' if r is None else f'metadata_http_{r.status_code}'
-            failures.append({'doi': doi, 'status': status})
-            continue
-        work = r.json()
-        got = None
-        error = None
+    batch = rows[batch_start:batch_start + BATCH_SIZE]
+    batch_no = batch_start // BATCH_SIZE + 1
+    log(f'OPENALEX BULK BATCH {batch_no} | input_dois={len(batch)} | successes={len(successes)}/{FULLTEXT_TARGET}')
 
-        # Free external locations only: use explicit PDF URLs. Do not crawl landing pages.
+    doi_values = '|'.join('https://doi.org/' + d for d in batch)
+    params = {
+        'filter': 'doi:' + doi_values,
+        'per_page': 100,
+        'api_key': key,
+        'select': 'id,doi,display_name,publication_year,publication_date,type,language,open_access,best_oa_location,locations,has_content',
+    }
+    log(f'OPENALEX METADATA BULK request for {len(batch)} DOIs')
+    r = request('GET', 'https://api.openalex.org/works', params=params)
+    if r is None:
+        failures.extend({'doi': d, 'status': 'bulk_metadata_request_failed'} for d in batch)
+        log(f'BULK FAILURE: request failed for batch {batch_no}')
+        continue
+    if not r.ok:
+        reset = r.headers.get('X-RateLimit-Reset')
+        remaining = r.headers.get('X-RateLimit-Remaining')
+        log(f'BULK FAILURE: HTTP {r.status_code} remaining={remaining} reset={reset}')
+        failures.extend({'doi': d, 'status': f'bulk_metadata_http_{r.status_code}'} for d in batch)
+        continue
+
+    data = r.json()
+    works = data.get('results', [])
+    log(f'OPENALEX BULK RETURNED {len(works)} works | remaining={r.headers.get("X-RateLimit-Remaining")} credits_used={r.headers.get("X-RateLimit-Credits-Used")}')
+    by_doi = {}
+    for work in works:
+        od = norm(work.get('doi') or '')
+        if od:
+            by_doi.setdefault(od, []).append(work)
+
+    for input_doi in batch:
+        if len(successes) >= FULLTEXT_TARGET:
+            break
+        matches = by_doi.get(input_doi, [])
+        if not matches:
+            pdf_manifest.append({'input_doi': input_doi, 'openalex_doi': '', 'doi_match': False, 'pdf_url': '', 'status': 'no_openalex_match'})
+            failures.append({'doi': input_doi, 'status': 'no_openalex_match'})
+            log(f'NO MATCH input={input_doi}')
+            continue
+
+        work = matches[0]
+        openalex_doi = norm(work.get('doi') or '')
+        if openalex_doi != input_doi:
+            pdf_manifest.append({'input_doi': input_doi, 'openalex_doi': openalex_doi, 'doi_match': False, 'pdf_url': '', 'status': 'doi_mismatch'})
+            failures.append({'doi': input_doi, 'status': 'doi_mismatch', 'openalex_doi': openalex_doi})
+            log(f'DOI MISMATCH input={input_doi} openalex={openalex_doi}')
+            continue
+
         locations = []
-        if work.get('best_oa_location'):
+        if isinstance(work.get('best_oa_location'), dict):
             locations.append(work['best_oa_location'])
-        locations.extend(work.get('locations') or [])
+        locations.extend(x for x in (work.get('locations') or []) if isinstance(x, dict))
+        pdf_urls = []
         seen = set()
         for loc in locations:
-            if not isinstance(loc, dict):
-                continue
             u = loc.get('pdf_url')
             if u and u not in seen:
                 seen.add(u)
-                log(f'EXTERNAL OA PDF {doi}')
-                got, error = try_content(doi, work, 'OpenAlex OA location', u)
-                if got:
-                    break
+                pdf_urls.append(u)
 
-        # Europe PMC XML, when the DOI maps exactly to a PMCID.
-        if not got:
-            log(f'EUROPE PMC LOOKUP {doi}')
-            e = request('GET', 'https://www.ebi.ac.uk/europepmc/webservices/rest/search',
-                        params={'query': f'DOI:"{doi}"', 'resultType': 'core', 'format': 'json'})
-            if e is not None and e.ok:
-                hits = e.json().get('resultList', {}).get('result', [])
-                exact = [h for h in hits if (h.get('doi') or '').strip().lower() == doi]
-                if exact and exact[0].get('pmcid'):
-                    pmcid = exact[0]['pmcid']
-                    log(f'EUROPE PMC XML {doi} -> {pmcid}')
-                    got, error = try_content(doi, work, 'Europe PMC XML',
-                                             f'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML')
+        if not pdf_urls:
+            pdf_manifest.append({'input_doi': input_doi, 'openalex_doi': work.get('doi', ''), 'doi_match': True, 'pdf_url': '', 'status': 'no_pdf_url'})
+            failures.append({'doi': input_doi, 'status': 'no_pdf_url'})
+            log(f'NO PDF URL input={input_doi}')
+            continue
 
-        # Unpaywall API + explicit PDF URLs only.
-        if not got:
-            log(f'UNPAYWALL LOOKUP {doi}')
-            u = request('GET', 'https://api.unpaywall.org/v2/' + quote(doi, safe=''),
-                        params={'email': os.environ.get('UNPAYWALL_EMAIL', 'fulltexttest@example.org')})
-            if u is not None and u.ok:
-                ud = u.json()
-                ulocs = ([ud.get('best_oa_location')] if ud.get('best_oa_location') else []) + (ud.get('oa_locations') or [])
-                seen = set()
-                for loc in ulocs:
-                    if not isinstance(loc, dict):
-                        continue
-                    url = loc.get('url_for_pdf')
-                    if url and url not in seen:
-                        seen.add(url)
-                        log(f'UNPAYWALL PDF {doi}')
-                        got, error = try_content(doi, work, 'Unpaywall OA location', url)
-                        if got:
-                            break
-
-        # OpenAlex cached content is the final fallback and is strictly capped.
-        has = work.get('has_content') or {}
-        wid = (work.get('id') or '').rstrip('/').split('/')[-1]
-        if not got and content_requests < OPENALEX_CONTENT_LIMIT and wid and (has.get('grobid_xml') or has.get('pdf')):
-            kind = 'tei-xml' if has.get('grobid_xml') else 'pdf'
-            url = f'https://content.openalex.org/works/{wid}.grobid-xml' if kind == 'tei-xml' else f'https://content.openalex.org/works/{wid}.pdf'
-            content_requests += 1
-            log(f'OPENALEX CONTENT {content_requests}/{OPENALEX_CONTENT_LIMIT} {kind} {doi}')
-            got, error = try_content(doi, work, 'OpenAlex cached content', url)
+        log(f'PDF URLS input={input_doi} count={len(pdf_urls)} first={pdf_urls[0]}')
+        got = None
+        last_error = None
+        for pdf_url in pdf_urls:
+            pdf_manifest.append({'input_doi': input_doi, 'openalex_doi': work.get('doi', ''), 'doi_match': True, 'pdf_url': pdf_url, 'status': 'attempted'})
+            got, last_error = download_external_pdf(input_doi, work, pdf_url)
+            if got:
+                pdf_manifest[-1]['status'] = 'retrieved'
+                break
+            pdf_manifest[-1]['status'] = last_error or 'download_failed'
 
         if got:
             successes.append(got)
             elapsed = time.time() - start
-            log(f'SUCCESS {len(successes)}/{FULLTEXT_TARGET} {doi} source={got["source"]} elapsed={elapsed/60:.1f}m')
+            log(f'SUCCESS {len(successes)}/{FULLTEXT_TARGET} input={input_doi} source={got["source"]} elapsed={elapsed/60:.1f}m')
         else:
-            failures.append({'doi': doi, 'status': error or 'no_fulltext'})
-            log(f'FAIL {doi}: {error or "no_fulltext"}')
-    except Exception as e:
-        failures.append({'doi': doi, 'status': 'unexpected_error', 'error': repr(e)})
-        log(f'ERROR {doi}: {e!r}')
+            failures.append({'doi': input_doi, 'status': last_error or 'external_pdf_failed'})
+            log(f'FAIL input={input_doi}: {last_error or "external_pdf_failed"}')
 
-log(f'RETRIEVAL COMPLETE successes={len(successes)} openalex_content={content_requests} failures={len(failures)}')
-if not successes:
-    raise SystemExit('No full texts retrieved; refusing to create an empty archive')
+log(f'RETRIEVAL COMPLETE successes={len(successes)} openalex_content_downloads=0 failures={len(failures)}')
 
 batch_date = time.strftime('%Y-%m-%d', time.gmtime())
 run_id = os.environ.get('GITHUB_RUN_ID', 'manual')
-archive = Path(f'openalex-free-{batch_date}-{run_id}.tar.gz')
+manifest_path = Path('daily-pdf-manifest.csv')
+with manifest_path.open('w', newline='', encoding='utf-8') as f:
+    fields = ['input_doi', 'openalex_doi', 'doi_match', 'pdf_url', 'status']
+    w = csv.DictWriter(f, fieldnames=fields)
+    w.writeheader()
+    w.writerows(pdf_manifest)
+
+if not successes:
+    Path('daily-results.json').write_text(json.dumps({
+        'date': batch_date, 'run_id': run_id, 'fulltexts_archived': 0,
+        'openalex_content_downloads': 0, 'failures': failures,
+        'pdf_urls_found': sum(1 for x in pdf_manifest if x['pdf_url']),
+        'doi_matches': sum(1 for x in pdf_manifest if x['doi_match']),
+    }, indent=2, ensure_ascii=False), encoding='utf-8')
+    raise SystemExit('No external OA full texts retrieved; metadata manifest has been written')
+
+archive = Path(f'openalex-external-oa-{batch_date}-{run_id}.tar.gz')
 with tarfile.open(archive, 'w:gz') as tf:
     tf.add(STAGE, arcname='fulltext')
+    tf.add(manifest_path, arcname='daily-pdf-manifest.csv')
 log(f'ARCHIVE {archive.name} {archive.stat().st_size/1024/1024:.1f} MiB')
 
 headers = {'Authorization': f'Bearer {token}'}
@@ -229,7 +268,16 @@ r = requests.post('https://zenodo.org/api/deposit/depositions', json={}, headers
 r.raise_for_status()
 dep = r.json(); dep_id = dep['id']; bucket = dep['links']['bucket']
 log(f'ZENODO CREATED id={dep_id}')
-metadata = {'metadata': {'title': f'fulltexttest free full-text batch {batch_date} ({len(successes)} works)', 'upload_type': 'dataset', 'publication_date': batch_date, 'description': 'Daily batch of full texts retrieved without exceeding the OpenAlex free daily content-download allowance. Per-work provenance and SHA-256 checksums are included.', 'access_right': 'restricted', 'access_conditions': 'Restricted to the depositor/project for research analysis.'}}
+metadata = {
+    'metadata': {
+        'title': f'fulltexttest external OA full-text batch {batch_date} ({len(successes)} works)',
+        'upload_type': 'dataset',
+        'publication_date': batch_date,
+        'description': 'Daily batch of full texts retrieved from external open-access PDF URLs discovered in OpenAlex metadata. The full texts were not downloaded from OpenAlex content services. Per-work input DOI, matched OpenAlex DOI, source URL, provenance, and SHA-256 checksums are included.',
+        'access_right': 'restricted',
+        'access_conditions': 'Restricted to the depositor/project for research analysis.',
+    }
+}
 r = requests.put(f'https://zenodo.org/api/deposit/depositions/{dep_id}', json=metadata, headers={**headers, 'Content-Type': 'application/json'}, timeout=(10, 60)); r.raise_for_status()
 log('ZENODO METADATA SAVED')
 with archive.open('rb') as fp:
@@ -241,9 +289,34 @@ published = r.json()
 log(f'ZENODO PUBLISHED id={published.get("id")} doi={published.get("doi")}')
 
 for item in successes:
-    state.setdefault('completed', {})[item['doi']] = {'date': batch_date, 'run_id': run_id, 'zenodo_record': published.get('id'), 'zenodo_doi': published.get('doi'), 'sha256': item['sha256'], 'format': item['format'], 'source': item['source'], 'source_url': item['source_url']}
+    state.setdefault('completed', {})[item['input_doi']] = {
+        'date': batch_date,
+        'run_id': run_id,
+        'zenodo_record': published.get('id'),
+        'zenodo_doi': published.get('doi'),
+        'sha256': item['sha256'],
+        'format': item['format'],
+        'source': item['source'],
+        'source_url': item['source_url'],
+        'openalex_id': item['openalex_id'],
+        'openalex_doi': item['openalex_doi'],
+        'doi_match': item['doi_match'],
+    }
 for item in failures:
-    state.setdefault('failed', {})[item['doi']] = {'date': batch_date, 'status': item['status']}
+    state.setdefault('failed', {})[item['doi']] = {
+        'date': batch_date,
+        'status': item['status'],
+        **({'openalex_doi': item['openalex_doi']} if 'openalex_doi' in item else {}),
+    }
 STATE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding='utf-8')
-Path('daily-results.json').write_text(json.dumps({'date': batch_date, 'run_id': run_id, 'fulltexts_archived': len(successes), 'openalex_content_requests': content_requests, 'failures': failures, 'zenodo': {'record_id': published.get('id'), 'doi': published.get('doi')}}, indent=2, ensure_ascii=False), encoding='utf-8')
+Path('daily-results.json').write_text(json.dumps({
+    'date': batch_date,
+    'run_id': run_id,
+    'fulltexts_archived': len(successes),
+    'openalex_content_downloads': 0,
+    'doi_matches': sum(1 for x in pdf_manifest if x['doi_match']),
+    'pdf_urls_found': sum(1 for x in pdf_manifest if x['pdf_url']),
+    'failures': failures,
+    'zenodo': {'record_id': published.get('id'), 'doi': published.get('doi')},
+}, indent=2, ensure_ascii=False), encoding='utf-8')
 log('CHECKPOINT STATE WRITTEN AFTER ZENODO PUBLICATION')
