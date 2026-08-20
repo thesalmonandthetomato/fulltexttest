@@ -1,0 +1,72 @@
+name: Oxylabs Google Scholar one-record diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install requests
+        run: python -m pip install --disable-pip-version-check --no-input requests
+
+      - name: Make exactly one Oxylabs Scholar request
+        env:
+          OXYLABS_USERNAME: ${{ secrets.OXYLABS_USERNAME }}
+          OXYLABS_PASSWORD: ${{ secrets.OXYLABS_PASSWORD }}
+        shell: python
+        run: |
+          import json, os
+          from pathlib import Path
+          import requests
+
+          user = os.environ['OXYLABS_USERNAME']
+          password = os.environ['OXYLABS_PASSWORD']
+          if not user or not password:
+              raise SystemExit('Oxylabs credentials are missing')
+
+          doi = '10.1021/pr049840t'
+          payload = {
+              'source': 'google_scholar',
+              'query': doi,
+              'parse': False,
+          }
+
+          r = requests.post(
+              'https://realtime.oxylabs.io/v1/queries',
+              auth=(user, password),
+              json=payload,
+              timeout=120,
+          )
+
+          out = Path('oxylabs_diagnostic')
+          out.mkdir()
+          (out / 'response.bin').write_bytes(r.content)
+          (out / 'metadata.json').write_text(json.dumps({
+              'doi': doi,
+              'request_payload': payload,
+              'http_status': r.status_code,
+              'content_type': r.headers.get('content-type', ''),
+              'content_length': len(r.content),
+          }, indent=2), encoding='utf-8')
+
+          print('HTTP status:', r.status_code)
+          print('Content-Type:', r.headers.get('content-type', ''))
+          print('Bytes:', len(r.content))
+          print('Raw response saved as artifact; no parsing or PDF retrieval attempted.')
+
+          # A non-2xx response is a genuine diagnostic failure.
+          r.raise_for_status()
+
+      - name: Upload raw diagnostic response
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxylabs-scholar-one-record-diagnostic-${{ github.run_id }}
+          path: oxylabs_diagnostic/
+          if-no-files-found: warn
