@@ -127,7 +127,6 @@ jobs:
           audit={'doi':doi,'expected_title':expected_title,'attempts':[],'selected_source':None,'verified_complete':False}
           candidates=[]
 
-          # 1. OpenAlex: metadata -> GROBID TEI/PDF content API, then OA locations.
           try:
               r=get(f'https://api.openalex.org/works/https://doi.org/{requests.utils.quote(doi)}')
               audit['openalex_http']=r.status_code
@@ -152,7 +151,6 @@ jobs:
 
           audit['expected_title']=expected_title
 
-          # 2. Europe PMC: exact DOI -> PMCID -> canonical full-text XML.
           try:
               q=requests.utils.quote(f'DOI:"{doi}"')
               r=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/search?query={q}&resultType=core&format=json')
@@ -165,7 +163,6 @@ jobs:
                       if rr.ok and rr.content: candidates.append(('Europe PMC XML',rr.url,rr.content,'xml'))
           except Exception as e: audit['europepmc_error']=repr(e)
 
-          # 3. Unpaywall: OA locations, tried in ranked order.
           try:
               email=os.environ.get('UNPAYWALL_EMAIL') or 'fulltexttest@example.org'
               r=get(f'https://api.unpaywall.org/v2/{requests.utils.quote(doi)}',params={'email':email})
@@ -181,7 +178,6 @@ jobs:
                           if u.startswith('http') and u not in seen: seen.add(u); candidates.append(('Unpaywall',u,None,'url'))
           except Exception as e: audit['unpaywall_error']=repr(e)
 
-          # Validate candidates uniformly; first complete, identity-matched text wins.
           seen=set()
           for source,url,data,kind in candidates:
               if url in seen: continue
@@ -221,6 +217,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fulltext-${{ matrix.doi }}-${{ github.run_id }}
+          name: fulltext-${{ matrix.doi.replace('/', '_') }}-${{ github.run_id }}
           path: fulltext_output/
           if-no-files-found: warn
