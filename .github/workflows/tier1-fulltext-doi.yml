@@ -34,7 +34,7 @@ jobs:
           OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
           SPRINGER_API_KEY: ${{ secrets.SPRINGER_API_KEY }}
         run: |
-          import csv, gzip, json, os, re, time
+          import csv, json, os, re, time
           from pathlib import Path
           import requests
           from lxml import etree
@@ -42,9 +42,8 @@ jobs:
           OUT = Path('tier1_results')
           OUT.mkdir(exist_ok=True)
           session = requests.Session()
-          session.headers['User-Agent'] = 'fulltexttest/tier1-doi/1.0'
+          session.headers['User-Agent'] = 'fulltexttest/tier1-doi/1.1'
 
-          # Exact 15-record test set used in the preceding experiments.
           records = [
             ("10.1021/pr049840t", "Application of isotope coded affinity tag (ICAT) analysis for the identification of differentially expressed proteins following infection of atlantic salmon (Salmo salar) with infectious hematopoietic necrosis virus (IHNV) or Renibacterium salmoninarum (BKD)"),
             ("10.1002/fsh.10985", "Inadvertent Hatchery Rainbow Trout Oncorhynchus mykiss Discovered in Native Westslope Cutthroat Trout Oncorhynchus clarkii lewisi Habitat: A Cautionary Tale"),
@@ -69,6 +68,13 @@ jobs:
               s=re.sub(r'^doi:\s*','',s)
               return s.rstrip(' .;,')
 
+          def norm_title(s):
+              return re.sub(r'[^a-z0-9]+',' ',(s or '').lower()).strip()
+
+          def title_score(a,b):
+              aa=set(norm_title(a).split()); bb=set(norm_title(b).split())
+              return len(aa & bb)/max(1,len(aa | bb))
+
           def safe(s): return re.sub(r'[^A-Za-z0-9._-]+','_',s)[:100]
 
           def get(url, **kwargs):
@@ -82,12 +88,60 @@ jobs:
               if binary: path.write_bytes(content)
               else: path.write_text(content, encoding='utf-8')
 
+          def inspect_tei(xml_bytes, target_title, target_doi):
+              result={
+                  'xml_parseable':False,
+                  'tei_root':False,
+                  'title':'',
+                  'doi_fields':[],
+                  'authors':0,
+                  'abstract_chars':0,
+                  'body_sections':0,
+                  'body_paragraphs':0,
+                  'body_chars':0,
+                  'reference_count':0,
+                  'title_score':0.0,
+                  'doi_match':False,
+                  'structural_fulltext':False,
+                  'structural_reason':''
+              }
+              try:
+                  root=etree.fromstring(xml_bytes)
+                  result['xml_parseable']=True
+                  result['tei_root']=etree.QName(root).localname.lower() == 'tei'
+                  titles=root.xpath('//*[local-name()="titleStmt"]//*[local-name()="title"] | //*[local-name()="article-title"]')
+                  if titles:
+                      result['title']=' '.join(''.join(titles[0].itertext()).split())
+                  doi_nodes=root.xpath('//*[local-name()="idno" and translate(@type,"DOI","doi")="doi"] | //*[local-name()="pub-id" and translate(@pub-id-type,"DOI","doi")="doi"]')
+                  for n in doi_nodes:
+                      d=' '.join(''.join(n.itertext()).split())
+                      if d: result['doi_fields'].append(norm_doi(d))
+                  result['doi_match']=bool(target_doi and norm_doi(target_doi) in result['doi_fields'])
+                  result['authors']=len(root.xpath('//*[local-name()="author"]'))
+                  result['abstract_chars']=len(' '.join(''.join(x.itertext()).split() for x in root.xpath('//*[local-name()="abstract"]')))
+                  result['body_sections']=len(root.xpath('//*[local-name()="body"]//*[local-name()="div" or local-name()="div1" or local-name()="div2" or local-name()="div3" or local-name()="section" or local-name()="head"]'))
+                  result['body_paragraphs']=len(root.xpath('//*[local-name()="body"]//*[local-name()="p"]'))
+                  result['body_chars']=len(' '.join(''.join(x.itertext()).split() for x in root.xpath('//*[local-name()="body"]')))
+                  result['reference_count']=len(root.xpath('//*[local-name()="listBibl"]//*[local-name()="biblStruct"] | //*[local-name()="ref"]'))
+                  result['title_score']=title_score(target_title,result['title'])
+                  reasons=[]
+                  if not result['xml_parseable']: reasons.append('xml_not_parseable')
+                  if result['title_score'] < 0.90: reasons.append('title_mismatch')
+                  if target_doi and not result['doi_match']: reasons.append('doi_field_mismatch')
+                  if result['body_chars'] < 5000: reasons.append('body_too_short')
+                  if result['body_paragraphs'] < 10: reasons.append('too_few_body_paragraphs')
+                  result['structural_fulltext']=len(reasons)==0
+                  result['structural_reason']='ok' if result['structural_fulltext'] else ';'.join(reasons)
+              except Exception as e:
+                  result['structural_reason']=f'parse_error:{e}'
+              return result
+
           audit=[]
           for n,(doi,title) in enumerate(records,1):
               stem=f'{n:02d}_{safe(doi or "no-doi")}'
               row={'n':n,'doi':doi,'database_title':title}
 
-              # ---------------- Europe PMC ----------------
+              # Europe PMC
               try:
                   if doi:
                       q=requests.utils.quote(f'DOI:"{doi}"')
@@ -106,15 +160,12 @@ jobs:
                               if xr.ok and xr.content:
                                   save_raw(OUT/f'{stem}_europepmc_fulltext.xml',xr.content,binary=True)
                                   row['europepmc_fulltext']='xml'
-                  else: row['europepmc_note']='no DOI'
               except Exception as e: row['europepmc_error']=repr(e)
 
-              # ---------------- CORE ----------------
+              # CORE
               try:
                   key=os.environ.get('CORE_API_KEY','')
                   if key and doi:
-                      # Search is deliberately one request at a time with backoff because CORE documents
-                      # a strict search quota. Then use the article endpoint for the actual content.
                       r=get('https://api.core.ac.uk/v3/search/works',params={'q':f'doi:"{doi}"','limit':10},headers={'Authorization':f'Bearer {key}'})
                       row['core_search_http']=r.status_code
                       save_raw(OUT/f'{stem}_core_search.json',r.text)
@@ -130,54 +181,45 @@ jobs:
                           save_raw(OUT/f'{stem}_core_{cid}.json',ar.text)
                           if ar.ok:
                               ad=ar.json(); row[f'core_article_{j}_title']=ad.get('title') or ad.get('metadata',{}).get('title','')
-                              # Preserve any full-text fields supplied by the article endpoint.
-                              payload=None
-                              for k in ('fullText','full_text','text'):
-                                  if isinstance(ad.get(k),str) and ad[k].strip(): payload=ad[k]; break
+                              payload=next((ad[k] for k in ('fullText','full_text','text') if isinstance(ad.get(k),str) and ad[k].strip()),None)
                               if payload:
-                                  save_raw(OUT/f'{stem}_core_{cid}.txt',payload)
-                                  row[f'core_article_{j}_fulltext']='text'
+                                  save_raw(OUT/f'{stem}_core_{cid}.txt',payload); row[f'core_article_{j}_fulltext']='text'
                               pdf_url=ad.get('downloadUrl') or ad.get('fullTextUrl') or ad.get('metadata',{}).get('downloadUrl')
                               if pdf_url:
                                   pr=get(pdf_url,headers={'Authorization':f'Bearer {key}'})
                                   row[f'core_article_{j}_download_http']=pr.status_code
                                   if pr.ok and pr.content.startswith(b'%PDF'):
-                                      save_raw(OUT/f'{stem}_core_{cid}.pdf',pr.content,binary=True)
-                                      row[f'core_article_{j}_pdf']='pdf'
-                  elif not key: row['core_note']='CORE_API_KEY not configured'
-                  else: row['core_note']='no DOI'
+                                      save_raw(OUT/f'{stem}_core_{cid}.pdf',pr.content,binary=True); row[f'core_article_{j}_pdf']='pdf'
               except Exception as e: row['core_error']=repr(e)
 
-              # ---------------- OpenAlex ----------------
+              # OpenAlex
               try:
-                  # Metadata lookup by DOI is free; content download requires OPENALEX_API_KEY.
-                  q=requests.utils.quote(doi) if doi else ''
                   if doi:
+                      q=requests.utils.quote(doi)
                       r=get(f'https://api.openalex.org/works/https://doi.org/{q}')
                       row['openalex_http']=r.status_code
                       save_raw(OUT/f'{stem}_openalex.json',r.text)
                       if r.ok:
                           w=r.json(); row['openalex_id']=w.get('id',''); row['openalex_title']=w.get('display_name',''); row['openalex_doi']=w.get('doi','')
-                          row['openalex_has_pdf']=bool(w.get('has_content',{}).get('pdf'))
-                          row['openalex_has_tei']=bool(w.get('has_content',{}).get('grobid_xml'))
-                          key=os.environ.get('OPENALEX_API_KEY','')
-                          wid=(w.get('id','').rstrip('/').split('/')[-1])
+                          row['openalex_has_pdf']=bool(w.get('has_content',{}).get('pdf')); row['openalex_has_tei']=bool(w.get('has_content',{}).get('grobid_xml'))
+                          key=os.environ.get('OPENALEX_API_KEY',''); wid=(w.get('id','').rstrip('/').split('/')[-1])
                           if key and wid:
                               if row['openalex_has_tei']:
                                   tr=get(f'https://content.openalex.org/works/{wid}.grobid-xml',params={'api_key':key})
                                   row['openalex_tei_http']=tr.status_code
                                   if tr.ok and tr.content:
                                       save_raw(OUT/f'{stem}_openalex.tei.xml',tr.content,binary=True); row['openalex_fulltext']='tei'
+                                      tei=inspect_tei(tr.content,title,doi)
+                                      for k,v in tei.items(): row[f'openalex_tei_{k}']=v
                               if row['openalex_has_pdf']:
                                   pr=get(f'https://content.openalex.org/works/{wid}.pdf',params={'api_key':key})
                                   row['openalex_pdf_http']=pr.status_code
                                   if pr.ok and pr.content.startswith(b'%PDF'):
                                       save_raw(OUT/f'{stem}_openalex.pdf',pr.content,binary=True); row['openalex_fulltext_pdf']='pdf'
                           elif not key: row['openalex_note']='OPENALEX_API_KEY not configured; metadata only'
-                  else: row['openalex_note']='no DOI'
               except Exception as e: row['openalex_error']=repr(e)
 
-              # ---------------- Springer Nature OA ----------------
+              # Springer Nature OA
               try:
                   key=os.environ.get('SPRINGER_API_KEY','')
                   if key and doi:
@@ -186,15 +228,10 @@ jobs:
                       row['springer_http']=jr.status_code
                       save_raw(OUT/f'{stem}_springer_jats.xml',jr.text)
                       if jr.ok and jr.content:
-                          # Springer may return metadata XML where JATS full text is unavailable; preserve it exactly.
                           try:
-                              root=etree.fromstring(jr.content)
-                              text=' '.join(x.strip() for x in root.itertext() if x and x.strip())
-                              row['springer_text_chars']=len(text)
-                              row['springer_has_body']=bool(root.xpath('//*[local-name()="body"]'))
+                              root=etree.fromstring(jr.content); text=' '.join(x.strip() for x in root.itertext() if x and x.strip())
+                              row['springer_text_chars']=len(text); row['springer_has_body']=bool(root.xpath('//*[local-name()="body"]'))
                           except Exception: pass
-                  elif not key: row['springer_note']='SPRINGER_API_KEY not configured'
-                  else: row['springer_note']='no DOI'
               except Exception as e: row['springer_error']=repr(e)
 
               audit.append(row)
@@ -205,7 +242,7 @@ jobs:
           with (OUT/'audit.csv').open('w',newline='',encoding='utf-8') as f:
               w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(audit)
           (OUT/'audit.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
-          print('Completed 15-record Tier 1 retrieval.')
+          print('Completed 15-record Tier 1 retrieval with TEI structural checks.')
 
       - name: Upload Tier 1 results
         if: always()
