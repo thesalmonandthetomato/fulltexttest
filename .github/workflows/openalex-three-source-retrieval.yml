@@ -100,130 +100,107 @@ jobs:
           from pypdf import PdfReader
 
           OUT=Path('fulltext_output'); OUT.mkdir(exist_ok=True)
-          s=requests.Session(); s.headers.update({'User-Agent':'fulltexttest/doi-fulltext-retrieval/1.0','Accept-Language':'en-GB,en;q=0.9'})
-
+          s=requests.Session(); s.headers.update({'User-Agent':'fulltexttest/doi-fulltext-retrieval/1.1','Accept-Language':'en-GB,en;q=0.9'})
           def norm_doi(x):
               x=(x or '').strip().lower(); x=re.sub(r'^https?://doi.org/','',x); x=re.sub(r'^doi:\s*','',x); return x.rstrip(' .;,')
           doi=norm_doi(os.environ['DOI_INPUT'])
           if not re.match(r'^10\.\d{4,9}/\S+$',doi): raise SystemExit(f'Invalid DOI: {doi}')
           expected_title=os.environ.get('TITLE_INPUT','').strip()
-
           def get(url, **kw):
               for i in range(5):
                   r=s.get(url,timeout=60,allow_redirects=True,**kw)
                   if r.status_code not in (429,500,502,503,504) or i==4: return r
                   time.sleep(2**i)
-
+          def norm_title(x): return re.sub(r'[^a-z0-9]+',' ',(x or '').lower()).strip()
           def title_score(a,b):
-              A=set(re.sub(r'[^a-z0-9]+',' ',a.lower()).split()); B=set(re.sub(r'[^a-z0-9]+',' ',b.lower()).split())
-              return len(A&B)/max(1,len(A|B))
-
+              A=set(norm_title(a).split()); B=set(norm_title(b).split()); return len(A&B)/max(1,len(A|B))
           def parse_pdf(data):
               p=OUT/'source.pdf'; p.write_bytes(data)
               try:
-                  r=PdfReader(str(p)); return '\n\n'.join((x.extract_text() or '') for x in r.pages),len(r.pages)
+                  r=PdfReader(str(p)); pages=[x.extract_text() or '' for x in r.pages]; return '\n\n'.join(pages),len(pages),pages
               finally: p.unlink(missing_ok=True)
-
           def parse_tei(data):
               root=etree.fromstring(data)
               def txt(nodes): return '\n'.join(' '.join(''.join(n.itertext()).split()) for n in nodes if n is not None).strip()
               title=txt(root.xpath('//*[local-name()="titleStmt"]//*[local-name()="title"] | //*[local-name()="article-title"]'))
-              abstract=txt(root.xpath('//*[local-name()="abstract"]'))
-              body=txt(root.xpath('//*[local-name()="body"]'))
-              refs=txt(root.xpath('//*[local-name()="listBibl"]'))
+              abstract=txt(root.xpath('//*[local-name()="abstract"]')); body=txt(root.xpath('//*[local-name()="body"]')); refs=txt(root.xpath('//*[local-name()="listBibl"]'))
               dois=[]
               for n in root.xpath('//*[local-name()="idno" and translate(@type,"DOI","doi")="doi"] | //*[local-name()="pub-id" and translate(@pub-id-type,"DOI","doi")="doi"]'):
                   d=norm_doi(' '.join(''.join(n.itertext()).split()));
                   if d: dois.append(d)
               return title,abstract,body,refs,sorted(set(dois))
-
-          def validate_text(text):
-              refs=bool(re.search(r'\b(references|bibliography|literature cited)\b',text.lower()))
+          def validate_pdf(text,pages,source_title):
               observed=sorted(set(norm_doi(x) for x in re.findall(r'10\.\d{4,9}/[-._;()/:A-Z0-9]+',text,re.I)))
               doi_match=doi in observed
-              ts=title_score(expected_title,text[:15000]) if expected_title else None
-              return {'text_chars':len(text),'reference_section':refs,'observed_dois':observed,'doi_match':doi_match,'title_score':ts}
+              page1=' '.join(pages[:2]); page1_score=title_score(expected_title,page1)
+              full_score=title_score(expected_title,text[:60000])
+              source_score=title_score(source_title,page1) if source_title else 0
+              identity_ok=doi_match or page1_score>=0.35 or source_score>=0.35 or full_score>=0.35
+              return {'text_chars':len(text),'reference_section':bool(re.search(r'\b(references|bibliography|literature cited)\b',text.lower())),'observed_dois':observed,'doi_match':doi_match,'page1_title_score':page1_score,'source_title_score':source_score,'fulltext_title_score':full_score,'identity_ok':identity_ok}
 
-          audit={'doi':doi,'expected_title':expected_title,'attempts':[],'selected_source':None,'verified_complete':False}
+          audit={'doi':doi,'expected_title':expected_title,'attempts':[],'selected_source':None,'verified_complete':False,'sources':{}}
           candidates=[]
-
           try:
-              r=get(f'https://api.openalex.org/works/https://doi.org/{requests.utils.quote(doi)}')
-              audit['openalex_http']=r.status_code
+              r=get(f'https://api.openalex.org/works/https://doi.org/{requests.utils.quote(doi)}'); audit['openalex_http']=r.status_code
               if r.ok:
-                  w=r.json(); audit['openalex_id']=w.get('id'); audit['openalex_title']=w.get('display_name'); audit['openalex_has_content']=w.get('has_content',{})
-                  if not expected_title: expected_title=w.get('display_name') or ''
-                  key=os.environ.get('OPENALEX_API_KEY',''); wid=(w.get('id') or '').rstrip('/').split('/')[-1]
+                  w=r.json(); audit['openalex_id']=w.get('id'); audit['openalex_title']=w.get('display_name'); audit['openalex_has_content']=w.get('has_content',{}); audit['sources']['openalex']={'matched':True,'has_content':w.get('has_content',{})}
+                  source_title=w.get('display_name') or expected_title; key=os.environ.get('OPENALEX_API_KEY',''); wid=(w.get('id') or '').rstrip('/').split('/')[-1]
                   if key and wid:
                       if w.get('has_content',{}).get('grobid_xml'):
-                          rr=get(f'https://content.openalex.org/works/{wid}.grobid-xml',params={'api_key':key})
-                          audit['openalex_tei_http']=rr.status_code
-                          if rr.ok and rr.content: candidates.append(('OpenAlex TEI',rr.url,rr.content,'xml'))
+                          rr=get(f'https://content.openalex.org/works/{wid}.grobid-xml',params={'api_key':key}); audit['openalex_tei_http']=rr.status_code
+                          if rr.ok and rr.content: candidates.append(('OpenAlex TEI',rr.url,rr.content,'xml',source_title))
                       if w.get('has_content',{}).get('pdf'):
-                          rr=get(f'https://content.openalex.org/works/{wid}.pdf',params={'api_key':key})
-                          audit['openalex_pdf_http']=rr.status_code
-                          if rr.ok and rr.content.startswith(b'%PDF'): candidates.append(('OpenAlex PDF',rr.url,rr.content,'pdf'))
+                          rr=get(f'https://content.openalex.org/works/{wid}.pdf',params={'api_key':key}); audit['openalex_pdf_http']=rr.status_code
+                          if rr.ok and rr.content.startswith(b'%PDF'): candidates.append(('OpenAlex PDF',rr.url,rr.content,'pdf',source_title))
                   for loc in [w.get('best_oa_location')]+(w.get('locations') or []):
                       if not loc: continue
                       u=(loc.get('pdf_url') or loc.get('landing_page_url') or '').strip()
-                      if u.startswith('http'): candidates.append(('OpenAlex OA location',u,None,'url'))
+                      if u.startswith('http'): candidates.append(('OpenAlex OA location',u,None,'url',source_title))
           except Exception as e: audit['openalex_error']=repr(e)
-
-          audit['expected_title']=expected_title
-
           try:
-              q=requests.utils.quote(f'DOI:"{doi}"')
-              r=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/search?query={q}&resultType=core&format=json')
-              audit['europepmc_http']=r.status_code
+              q=requests.utils.quote(f'DOI:"{doi}"'); r=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/search?query={q}&resultType=core&format=json'); audit['europepmc_http']=r.status_code
               if r.ok:
-                  hits=r.json().get('resultList',{}).get('result',[]); exact=[h for h in hits if norm_doi(h.get('doi'))==doi]
+                  hits=r.json().get('resultList',{}).get('result',[]); exact=[h for h in hits if norm_doi(h.get('doi'))==doi]; audit['sources']['europepmc']={'matched':bool(exact),'pmcid':exact[0].get('pmcid') if exact else None}
                   if exact and exact[0].get('pmcid'):
-                      pmcid=exact[0]['pmcid']; rr=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML')
-                      audit['europepmc_fulltext_http']=rr.status_code
-                      if rr.ok and rr.content: candidates.append(('Europe PMC XML',rr.url,rr.content,'xml'))
+                      pmcid=exact[0]['pmcid']; rr=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML'); audit['europepmc_fulltext_http']=rr.status_code
+                      if rr.ok and rr.content: candidates.append(('Europe PMC XML',rr.url,rr.content,'xml',expected_title))
           except Exception as e: audit['europepmc_error']=repr(e)
-
           try:
-              email=os.environ.get('UNPAYWALL_EMAIL') or 'fulltexttest@example.org'
-              r=get(f'https://api.unpaywall.org/v2/{requests.utils.quote(doi)}',params={'email':email})
-              audit['unpaywall_http']=r.status_code
+              email=os.environ.get('UNPAYWALL_EMAIL') or 'fulltexttest@example.org'; r=get(f'https://api.unpaywall.org/v2/{requests.utils.quote(doi)}',params={'email':email}); audit['unpaywall_http']=r.status_code
               if r.ok:
                   data=r.json(); locs=[]
                   if data.get('best_oa_location'): locs.append(data['best_oa_location'])
-                  locs.extend(data.get('oa_locations') or [])
-                  seen=set()
+                  locs.extend(data.get('oa_locations') or []); urls=[]; seen=set()
                   for loc in locs:
-                      for k in ('url_for_pdf','url'):
+                      for k in ('url_for_pdf','url_for_landing_page','url'):
                           u=(loc.get(k) or '').strip()
-                          if u.startswith('http') and u not in seen: seen.add(u); candidates.append(('Unpaywall',u,None,'url'))
+                          if u.startswith('http') and u not in seen: seen.add(u); urls.append(u); candidates.append(('Unpaywall',u,None,'url',expected_title))
+                  audit['sources']['unpaywall']={'location_count':len(urls),'urls':urls}
           except Exception as e: audit['unpaywall_error']=repr(e)
 
           seen=set()
-          for source,url,data,kind in candidates:
+          for source,url,data,kind,source_title in candidates:
               if url in seen: continue
               seen.add(url)
               if data is None:
                   rr=get(url); data=rr.content; final_url=rr.url; status=rr.status_code; ctype=rr.headers.get('content-type','')
-              else:
-                  final_url=url; status=200; ctype='application/'+kind
+              else: final_url=url; status=200; ctype='application/'+kind
               attempt={'source':source,'url':url,'final_url':final_url,'http':status,'content_type':ctype}
               if status>=400 or not data: attempt['result']='download_failed'; audit['attempts'].append(attempt); continue
               try:
                   if kind=='xml' or 'xml' in ctype.lower() or data.lstrip().startswith(b'<?xml') or b'<article' in data[:1000]:
-                      title,abstract,body,refs,xml_dois=parse_tei(data)
-                      text='\n\n'.join(x for x in (title,abstract,body,refs) if x)
-                      validation={'text_chars':len(text),'reference_count':len(re.findall(r'<biblStruct|<ref\b',data.decode('utf-8','ignore'))),'observed_dois':xml_dois,'doi_match':doi in xml_dois,'title_score':title_score(expected_title,title) if expected_title else None}
-                      complete=len(body)>=5000 and validation['reference_count']>=3 and (validation['doi_match'] or (validation['title_score'] or 0)>=0.70)
-                      attempt.update({'representation':'TEI/XML','title':title,'validation':validation,'complete':complete})
-                      if complete:
-                          (OUT/'fulltext.txt').write_text(text,encoding='utf-8'); (OUT/'fulltext.xml').write_bytes(data)
+                      title,abstract,body,refs,xml_dois=parse_tei(data); text='\n\n'.join(x for x in (title,abstract,body,refs) if x)
+                      validation={'text_chars':len(text),'reference_count':len(re.findall(r'<biblStruct|<ref\b',data.decode('utf-8','ignore'))),'observed_dois':xml_dois,'doi_match':doi in xml_dois,'title_score':title_score(expected_title,title) if expected_title else 0}
+                      identity_ok=validation['doi_match'] or validation['title_score']>=0.70 or (source.startswith('OpenAlex') and title_score(source_title,title)>=0.70)
+                      complete=len(body)>=5000 and validation['reference_count']>=3 and identity_ok; attempt.update({'representation':'TEI/XML','title':title,'validation':validation,'identity_ok':identity_ok,'complete':complete})
+                      if complete: (OUT/'fulltext.txt').write_text(text,encoding='utf-8'); (OUT/'fulltext.xml').write_bytes(data)
+                  elif 'pdf' in ctype.lower() or data.startswith(b'%PDF') or kind=='pdf':
+                      text,pages_n,pages=parse_pdf(data); validation=validate_pdf(text,pages,source_title); complete=len(text)>=5000 and validation['reference_section'] and validation['identity_ok']; attempt.update({'representation':'PDF','pages':pages_n,'validation':validation,'complete':complete})
+                      if complete: (OUT/'fulltext.txt').write_text(text,encoding='utf-8'); (OUT/'fulltext.pdf').write_bytes(data)
                   else:
-                      text,pages=parse_pdf(data); validation=validate_text(text); complete=len(text)>=5000 and validation['reference_section'] and (validation['doi_match'] or (validation['title_score'] or 0)>=0.25); attempt.update({'representation':'PDF','pages':pages,'validation':validation,'complete':complete})
-                      if complete:
-                          (OUT/'fulltext.txt').write_text(text,encoding='utf-8'); (OUT/'fulltext.pdf').write_bytes(data)
+                      attempt.update({'result':'unsupported_content_type'}); audit['attempts'].append(attempt); continue
                   audit['attempts'].append(attempt)
-                  if complete:
-                      audit.update({'selected_source':source,'source_url':final_url,'verified_complete':True}); break
+                  if complete: audit.update({'selected_source':source,'source_url':final_url,'verified_complete':True}); break
               except Exception as e:
                   attempt.update({'result':'parse_or_validation_error','error':repr(e)}); audit['attempts'].append(attempt)
 
