@@ -1,0 +1,216 @@
+name: Tier 1 DOI full-text retrieval
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: tier1-fulltext-doi
+  cancel-in-progress: false
+
+env:
+  CORE_API_KEY: ${{ secrets.CORE_API_KEY }}
+  OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+  SPRINGER_API_KEY: ${{ secrets.SPRINGER_API_KEY }}
+
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check --no-input requests lxml
+
+      - name: Verify dependencies
+        run: python -c "import requests,lxml; print('dependencies OK')"
+
+      - name: Retrieve Tier 1 full text by DOI
+        shell: python
+        env:
+          CORE_API_KEY: ${{ secrets.CORE_API_KEY }}
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          SPRINGER_API_KEY: ${{ secrets.SPRINGER_API_KEY }}
+        run: |
+          import csv, gzip, json, os, re, time
+          from pathlib import Path
+          import requests
+          from lxml import etree
+
+          OUT = Path('tier1_results')
+          OUT.mkdir(exist_ok=True)
+          session = requests.Session()
+          session.headers['User-Agent'] = 'fulltexttest/tier1-doi/1.0'
+
+          # Exact 15-record test set used in the preceding experiments.
+          records = [
+            ("10.1021/pr049840t", "Application of isotope coded affinity tag (ICAT) analysis for the identification of differentially expressed proteins following infection of atlantic salmon (Salmo salar) with infectious hematopoietic necrosis virus (IHNV) or Renibacterium salmoninarum (BKD)"),
+            ("10.1002/fsh.10985", "Inadvertent Hatchery Rainbow Trout Oncorhynchus mykiss Discovered in Native Westslope Cutthroat Trout Oncorhynchus clarkii lewisi Habitat: A Cautionary Tale"),
+            ("10.1201/9781003077770-78", "Fish Farming Technology - Biological basis for landbased farming of Atlantic salmon: Growth"),
+            ("10.2458/v24i1.20963", "Petri dishes of an archipelago: the ecological rubble of the Chilean salmon farming industry"),
+            ("10.1007/s11160-022-09714-x", "A review of marine stressors impacting Atlantic salmon Salmo salar, with an assessment of the major threats to English stocks"),
+            ("10.3354/dao01972", "Real-time PCR detection of Moritella viscosa, the likely causal agent of winter-ulcer in Atlantic salmon Salmo salar and rainbow trout Oncorhynchus mykiss"),
+            ("10.18174/371265", "Next-generation salmonid alphavirus vaccine development"),
+            ("10.14288/1.0058967", "Physico-chemical aspects of sediment recovery at two abandoned salmon farm sites in British Columbia"),
+            ("10.1038/s41598-019-39080-x", "Wound healing in post-smolt Atlantic salmon (Salmo salar L.)"),
+            ("10.1111/jfb.12710", "Chronic stress of rainbow trout Oncorhynchus mykiss at high altitude: a field study"),
+            ("10.15586/ijfs.v38i2.3600", "Environmental effects on nutrient composition of Turkish Salmon (Oncorhynchus mykiss): a comparison between marine and reservoir systems"),
+            ("10.6084/m9.figshare.31147177.v1", "Salmon"),
+            ("10.56093/ehyqc013", "Pathology of Aeromonas hydrophila infection in rainbow trout (Oncorhynchus mykiss) of Himachal Pradesh"),
+            ("10.1007/s10750-026-06204-0", "Ecological patterns of benthic communities in relation to salmon aquaculture in the Inner Sea of Chiloé (southern Chile)"),
+            ("", "Sinop Yöresinde Denizde Kafeslerde Farklı Yemlerle Yapılan Gökkuşağı Alabalığı (Oncorhynchus mykiss W. 1792) Yetiştiriciliği Üzerine Bir Araştırma")
+          ]
+
+          def norm_doi(s):
+              s=(s or '').strip().lower()
+              s=re.sub(r'^https?://doi.org/','',s)
+              s=re.sub(r'^doi:\s*','',s)
+              return s.rstrip(' .;,')
+
+          def safe(s): return re.sub(r'[^A-Za-z0-9._-]+','_',s)[:100]
+
+          def get(url, **kwargs):
+              for attempt in range(5):
+                  r=session.get(url, timeout=90, **kwargs)
+                  if r.status_code not in (429,500,502,503,504): return r
+                  time.sleep(min(30, 2**attempt))
+              return r
+
+          def save_raw(path, content, binary=False):
+              if binary: path.write_bytes(content)
+              else: path.write_text(content, encoding='utf-8')
+
+          audit=[]
+          for n,(doi,title) in enumerate(records,1):
+              stem=f'{n:02d}_{safe(doi or "no-doi")}'
+              row={'n':n,'doi':doi,'database_title':title}
+
+              # ---------------- Europe PMC ----------------
+              try:
+                  if doi:
+                      q=requests.utils.quote(f'DOI:"{doi}"')
+                      r=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/search?query={q}&resultType=core&format=json')
+                      row['europepmc_http']=r.status_code
+                      save_raw(OUT/f'{stem}_europepmc_search.json',r.text)
+                      hits=(r.json().get('resultList',{}).get('result',[]) if r.ok else [])
+                      exact=[h for h in hits if norm_doi(h.get('doi'))==norm_doi(doi)]
+                      row['europepmc_exact']=len(exact)
+                      if exact:
+                          h=exact[0]; row['europepmc_id']=h.get('id',''); row['europepmc_pmcid']=h.get('pmcid',''); row['europepmc_title']=h.get('title','')
+                          pmcid=h.get('pmcid')
+                          if pmcid:
+                              xr=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML')
+                              row['europepmc_fulltext_http']=xr.status_code
+                              if xr.ok and xr.content:
+                                  save_raw(OUT/f'{stem}_europepmc_fulltext.xml',xr.content,binary=True)
+                                  row['europepmc_fulltext']='xml'
+                  else: row['europepmc_note']='no DOI'
+              except Exception as e: row['europepmc_error']=repr(e)
+
+              # ---------------- CORE ----------------
+              try:
+                  key=os.environ.get('CORE_API_KEY','')
+                  if key and doi:
+                      # Search is deliberately one request at a time with backoff because CORE documents
+                      # a strict search quota. Then use the article endpoint for the actual content.
+                      r=get('https://api.core.ac.uk/v3/search/works',params={'q':f'doi:"{doi}"','limit':10},headers={'Authorization':f'Bearer {key}'})
+                      row['core_search_http']=r.status_code
+                      save_raw(OUT/f'{stem}_core_search.json',r.text)
+                      data=r.json() if r.ok else {}
+                      hits=data.get('results',[]) or data.get('data',[])
+                      exact=[h for h in hits if norm_doi(h.get('doi') or h.get('metadata',{}).get('doi'))==norm_doi(doi)]
+                      row['core_exact']=len(exact)
+                      for j,h in enumerate(exact[:3],1):
+                          cid=h.get('id') or h.get('coreId')
+                          if not cid: continue
+                          ar=get(f'https://api.core.ac.uk/v3/articles/get/{cid}',headers={'Authorization':f'Bearer {key}'})
+                          row[f'core_article_{j}_http']=ar.status_code
+                          save_raw(OUT/f'{stem}_core_{cid}.json',ar.text)
+                          if ar.ok:
+                              ad=ar.json(); row[f'core_article_{j}_title']=ad.get('title') or ad.get('metadata',{}).get('title','')
+                              # Preserve any full-text fields supplied by the article endpoint.
+                              payload=None
+                              for k in ('fullText','full_text','text'):
+                                  if isinstance(ad.get(k),str) and ad[k].strip(): payload=ad[k]; break
+                              if payload:
+                                  save_raw(OUT/f'{stem}_core_{cid}.txt',payload)
+                                  row[f'core_article_{j}_fulltext']='text'
+                              pdf_url=ad.get('downloadUrl') or ad.get('fullTextUrl') or ad.get('metadata',{}).get('downloadUrl')
+                              if pdf_url:
+                                  pr=get(pdf_url,headers={'Authorization':f'Bearer {key}'})
+                                  row[f'core_article_{j}_download_http']=pr.status_code
+                                  if pr.ok and pr.content.startswith(b'%PDF'):
+                                      save_raw(OUT/f'{stem}_core_{cid}.pdf',pr.content,binary=True)
+                                      row[f'core_article_{j}_pdf']='pdf'
+                  elif not key: row['core_note']='CORE_API_KEY not configured'
+                  else: row['core_note']='no DOI'
+              except Exception as e: row['core_error']=repr(e)
+
+              # ---------------- OpenAlex ----------------
+              try:
+                  # Metadata lookup by DOI is free; content download requires OPENALEX_API_KEY.
+                  q=requests.utils.quote(doi) if doi else ''
+                  if doi:
+                      r=get(f'https://api.openalex.org/works/https://doi.org/{q}')
+                      row['openalex_http']=r.status_code
+                      save_raw(OUT/f'{stem}_openalex.json',r.text)
+                      if r.ok:
+                          w=r.json(); row['openalex_id']=w.get('id',''); row['openalex_title']=w.get('display_name',''); row['openalex_doi']=w.get('doi','')
+                          row['openalex_has_pdf']=bool(w.get('has_content',{}).get('pdf'))
+                          row['openalex_has_tei']=bool(w.get('has_content',{}).get('grobid_xml'))
+                          key=os.environ.get('OPENALEX_API_KEY','')
+                          wid=(w.get('id','').rstrip('/').split('/')[-1])
+                          if key and wid:
+                              if row['openalex_has_tei']:
+                                  tr=get(f'https://content.openalex.org/works/{wid}.grobid-xml',params={'api_key':key})
+                                  row['openalex_tei_http']=tr.status_code
+                                  if tr.ok and tr.content:
+                                      save_raw(OUT/f'{stem}_openalex.tei.xml',tr.content,binary=True); row['openalex_fulltext']='tei'
+                              if row['openalex_has_pdf']:
+                                  pr=get(f'https://content.openalex.org/works/{wid}.pdf',params={'api_key':key})
+                                  row['openalex_pdf_http']=pr.status_code
+                                  if pr.ok and pr.content.startswith(b'%PDF'):
+                                      save_raw(OUT/f'{stem}_openalex.pdf',pr.content,binary=True); row['openalex_fulltext_pdf']='pdf'
+                          elif not key: row['openalex_note']='OPENALEX_API_KEY not configured; metadata only'
+                  else: row['openalex_note']='no DOI'
+              except Exception as e: row['openalex_error']=repr(e)
+
+              # ---------------- Springer Nature OA ----------------
+              try:
+                  key=os.environ.get('SPRINGER_API_KEY','')
+                  if key and doi:
+                      q=requests.utils.quote(f'doi:{doi}')
+                      jr=get(f'https://api.springernature.com/openaccess/jats',params={'q':q,'api_key':key})
+                      row['springer_http']=jr.status_code
+                      save_raw(OUT/f'{stem}_springer_jats.xml',jr.text)
+                      if jr.ok and jr.content:
+                          # Springer may return metadata XML where JATS full text is unavailable; preserve it exactly.
+                          try:
+                              root=etree.fromstring(jr.content)
+                              text=' '.join(x.strip() for x in root.itertext() if x and x.strip())
+                              row['springer_text_chars']=len(text)
+                              row['springer_has_body']=bool(root.xpath('//*[local-name()="body"]'))
+                          except Exception: pass
+                  elif not key: row['springer_note']='SPRINGER_API_KEY not configured'
+                  else: row['springer_note']='no DOI'
+              except Exception as e: row['springer_error']=repr(e)
+
+              audit.append(row)
+              print(f'[{n}/15] {doi or "NO DOI"} complete')
+              time.sleep(2)
+
+          fields=sorted({k for r in audit for k in r.keys()})
+          with (OUT/'audit.csv').open('w',newline='',encoding='utf-8') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(audit)
+          (OUT/'audit.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
+          print('Completed 15-record Tier 1 retrieval.')
+
+      - name: Upload Tier 1 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier1-fulltext-results-${{ github.run_id }}
+          path: tier1_results/
+          if-no-files-found: warn
