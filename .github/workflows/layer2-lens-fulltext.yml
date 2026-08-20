@@ -31,7 +31,7 @@ jobs:
           python -c "import requests; print('requests', requests.__version__)"
           test -n "$LENS_API_KEY" || (echo 'LENS_API_KEY secret is missing' && exit 1)
 
-      - name: Retrieve Lens URLs and attempt all candidate full-text downloads
+      - name: Retrieve Lens OA PDF URLs and attempt downloads
         shell: python
         env:
           LENS_API_KEY: ${{ secrets.LENS_API_KEY }}
@@ -44,7 +44,7 @@ jobs:
           OUT = Path('layer2_lens_results')
           OUT.mkdir(exist_ok=True)
           session = requests.Session()
-          session.headers.update({'User-Agent': 'fulltexttest/layer2-lens/3.0'})
+          session.headers.update({'User-Agent': 'fulltexttest/layer2-lens/4.0'})
           token = os.environ['LENS_API_KEY']
           headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
 
@@ -69,7 +69,7 @@ jobs:
               body = {
                   'query': {'match': {'doi': doi}},
                   'size': 10,
-                  'include': ['lens_id', 'title', 'external_ids', 'source_urls', 'full_text']
+                  'include': ['lens_id', 'title', 'external_ids', 'open_access']
               }
               for attempt in range(5):
                   r = session.post('https://api.lens.org/scholarly/search', headers=headers, json=body, timeout=60)
@@ -88,17 +88,9 @@ jobs:
                       time.sleep(min(30, 2 ** attempt))
               return r
 
-          def safe_ext(url, content_type):
-              path = urlparse(url).path.lower()
-              ct = (content_type or '').lower()
-              if path.endswith('.pdf') or 'application/pdf' in ct: return '.pdf'
-              if path.endswith('.xml') or 'xml' in ct: return '.xml'
-              if 'html' in ct or path.endswith('.html') or path.endswith('.htm'): return '.html'
-              return '.bin'
-
           audit = []
           for n, doi, title in records:
-              row = {'record': n, 'doi': doi, 'database_title': title, 'lens_http': None, 'lens_result_count': 0, 'lens_exact_doi_results': 0, 'urls_found': 0, 'attempts': []}
+              row = {'record': n, 'doi': doi, 'database_title': title, 'lens_http': None, 'lens_result_count': 0, 'lens_exact_doi_results': 0, 'pdf_urls_found': 0, 'attempts': []}
               try:
                   r = lens_search(doi)
                   row['lens_http'] = r.status_code
@@ -119,15 +111,22 @@ jobs:
                       h = exact[0]
                       row['lens_id'] = h.get('lens_id', '')
                       row['lens_title'] = h.get('title', '')
-                      source_urls = h.get('source_urls', []) or []
-                      row['urls_found'] = len(source_urls)
-                      (OUT / f'{n}_lens_record.json').write_text(json.dumps(h, indent=2, ensure_ascii=False), encoding='utf-8')
-                      for i, su in enumerate(source_urls, 1):
-                          url = su.get('url', '') if isinstance(su, dict) else str(su)
-                          typ = su.get('type', '') if isinstance(su, dict) else ''
-                          if not url:
+                      oa = h.get('open_access', {}) or {}
+                      locations = oa.get('locations', []) or []
+                      pdf_urls = []
+                      for loc in locations:
+                          if not isinstance(loc, dict):
                               continue
-                          att = {'rank': i, 'url': url, 'type': typ}
+                          urls = loc.get('pdf_urls', []) or []
+                          if isinstance(urls, str):
+                              urls = [urls]
+                          for url in urls:
+                              if url and url not in pdf_urls:
+                                  pdf_urls.append(url)
+                      row['pdf_urls_found'] = len(pdf_urls)
+                      (OUT / f'{n}_lens_record.json').write_text(json.dumps(h, indent=2, ensure_ascii=False), encoding='utf-8')
+                      for i, url in enumerate(pdf_urls, 1):
+                          att = {'rank': i, 'url': url, 'type': 'open_access.locations.pdf_urls'}
                           try:
                               rr = download(url)
                               att['http'] = rr.status_code
@@ -135,7 +134,7 @@ jobs:
                               att['content_type'] = rr.headers.get('content-type', '')
                               att['bytes'] = len(rr.content)
                               if rr.ok and len(rr.content) >= 10000:
-                                  fname = f'{n}_lens_{i}{safe_ext(rr.url, rr.headers.get("content-type", ""))}'
+                                  fname = f'{n}_lens_{i}.pdf'
                                   (OUT / fname).write_bytes(rr.content)
                                   att['file'] = fname
                                   att['substantial'] = True
@@ -147,18 +146,18 @@ jobs:
               except Exception as e:
                   row['error'] = repr(e)
               audit.append(row)
-              print(f"[{n}] {doi}: Lens HTTP={row['lens_http']} exact={row['lens_exact_doi_results']} URLs={row['urls_found']} attempts={len(row['attempts'])}")
+              print(f"[{n}] {doi}: Lens HTTP={row['lens_http']} exact={row['lens_exact_doi_results']} PDF URLs={row['pdf_urls_found']} attempts={len(row['attempts'])}")
               time.sleep(1)
 
           for row in audit:
               row['attempts_json'] = json.dumps(row.get('attempts', []), ensure_ascii=False)
-          fields = ['record', 'doi', 'database_title', 'lens_http', 'lens_result_count', 'lens_exact_doi_results', 'lens_id', 'lens_title', 'urls_found', 'attempts_json', 'error']
+          fields = ['record', 'doi', 'database_title', 'lens_http', 'lens_result_count', 'lens_exact_doi_results', 'lens_id', 'lens_title', 'pdf_urls_found', 'attempts_json', 'error']
           with (OUT / 'audit.csv').open('w', newline='', encoding='utf-8') as f:
               w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
               w.writeheader()
               w.writerows(audit)
           (OUT / 'audit.json').write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding='utf-8')
-          print('Completed Layer 2 Lens URL retrieval.')
+          print('Completed Layer 2 Lens OA PDF URL retrieval.')
           print('No automated article identity/completeness judgement has been made.')
 
       - name: Upload Layer 2 results
