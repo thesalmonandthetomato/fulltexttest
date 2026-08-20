@@ -2,7 +2,7 @@ name: OpenAlex daily free full-text retrieval
 on:
   workflow_dispatch:
   schedule:
-    - cron: '37 21 * * *'
+    - cron: '17 9 * * *'
 concurrency:
   group: openalex-daily-free-content
   cancel-in-progress: false
@@ -18,13 +18,13 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install dependencies
-        run: python -m pip install --disable-pip-version-check --no-input requests lxml pypdf
+        run: python -m pip install --disable-pip-version-check --no-input requests lxml pypdf beautifulsoup4
       - name: Check long-term storage is configured
         env:
           ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
         run: |
-          test -n "$ZENODO_TOKEN" || { echo 'ZENODO_TOKEN is required. Refusing to download OpenAlex content without durable storage.'; exit 1; }
-      - name: Retrieve up to 100 new OpenAlex content files
+          test -n "$ZENODO_TOKEN" || { echo 'ZENODO_TOKEN is required. Refusing to download without durable storage.'; exit 1; }
+      - name: Retrieve up to 100 full texts, with at most 100 OpenAlex content downloads
         shell: python
         env:
           OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
@@ -32,11 +32,14 @@ jobs:
         run: |
           import csv, gzip, hashlib, json, os, re, tarfile, time
           from pathlib import Path
+          from urllib.parse import urljoin
           import requests
           from lxml import etree
           from pypdf import PdfReader
-          
-          DAILY_LIMIT = 100
+          from bs4 import BeautifulSoup
+
+          DAILY_FULLTEXT_TARGET = 100
+          DAILY_OPENALEX_CONTENT_LIMIT = 100
           MANIFEST = Path('data/living_evidence_map_master.csv')
           STATE = Path('data/openalex_free_state.json')
           STAGE = Path('daily_openalex_batch')
@@ -44,7 +47,10 @@ jobs:
           if not MANIFEST.exists(): raise SystemExit(f'Missing {MANIFEST}')
           key = os.environ.get('OPENALEX_API_KEY'); token = os.environ.get('ZENODO_TOKEN')
           if not key: raise SystemExit('OPENALEX_API_KEY secret is required')
-          def norm(doi): return re.sub(r'^(?:https?://doi.org/|doi:)','',doi.strip(),flags=re.I).rstrip(' .;,').lower()
+
+          def norm(doi):
+              return re.sub(r'^(?:https?://doi.org/|doi:)','',doi.strip(),flags=re.I).rstrip(' .;,').lower()
+          session=requests.Session(); session.headers['User-Agent']='fulltexttest/openalex-free-daily/2.0'
           def get(url, **kwargs):
               for attempt in range(8):
                   try: r=session.get(url,timeout=90,allow_redirects=True,**kwargs)
@@ -59,72 +65,151 @@ jobs:
           def parse_pdf(data):
               p=Path('/tmp/x.pdf');p.write_bytes(data)
               try:
-                  rr=PdfReader(str(p));return '\n\n'.join(x.extract_text() or '' for x in rr.pages),len(rr.pages)
-              finally:p.unlink(missing_ok=True)
+                  rr=PdfReader(str(p)); return '\n\n'.join(x.extract_text() or '' for x in rr.pages),len(rr.pages)
+              finally: p.unlink(missing_ok=True)
           def parse_xml(data):
               root=etree.fromstring(data)
-              return '\n'.join(' '.join(''.join(n.itertext()).split()) for n in root.xpath('//*[local-name()="body"]')).strip()
+              body='\n'.join(' '.join(''.join(n.itertext()).split()) for n in root.xpath('//*[local-name()="body"]')).strip()
+              return body
+          def parse_html(data):
+              soup=BeautifulSoup(data,'html.parser')
+              for x in soup(['script','style','nav','header','footer','aside']): x.decompose()
+              return ' '.join(soup.get_text(' ',strip=True).split())
+          def html_links(base,data):
+              soup=BeautifulSoup(data,'html.parser'); out=[]
+              for a in soup.find_all(['a','link'],href=True):
+                  u=urljoin(base,a.get('href'))
+                  if any(x in u.lower() for x in ('pdf','bitstream','download','document','content','fulltext','full-text','file')): out.append(u)
+              for m in soup.find_all('meta'):
+                  v=m.get('content','')
+                  if isinstance(v,str) and any(x in v.lower() for x in ('pdf','download','fulltext','full-text')): out.append(urljoin(base,v))
+              return list(dict.fromkeys(out))
+          def materialise(doi,w,source,url,data,ct):
+              raw=data; lower=ct.lower()
+              if raw[:2]==b'\x1f\x8b' or 'gzip' in lower:
+                  try: raw=gzip.decompress(raw)
+                  except Exception: pass
+              if raw.startswith(b'%PDF') or 'pdf' in lower:
+                  text,pages=parse_pdf(raw)
+                  if len(text)<3000: return None,'pdf_parse_failure'
+                  ext='pdf.gz'; stored=gzip.compress(raw,compresslevel=6); fmt='pdf'; checksum=hashlib.sha256(raw).hexdigest()
+              elif 'xml' in lower or raw.lstrip().startswith(b'<?xml') or b'<TEI' in raw[:1000]:
+                  text=parse_xml(raw)
+                  if len(text)<3000: return None,'xml_parse_failure'
+                  ext='xml.gz'; stored=gzip.compress(raw,compresslevel=6); fmt='xml'; checksum=hashlib.sha256(raw).hexdigest()
+              else:
+                  text=parse_html(raw)
+                  if len(text)<5000: return None,'html_parse_failure'
+                  ext='txt.gz'; stored=gzip.compress(text.encode('utf-8'),compresslevel=6); fmt='html'; checksum=hashlib.sha256(text.encode('utf-8')).hexdigest()
+              slug=hashlib.sha256(doi.encode()).hexdigest()[:20]; d=STAGE/slug; d.mkdir(parents=True,exist_ok=True)
+              (d/f'fulltext.{ext}').write_bytes(stored)
+              audit={'doi':doi,'openalex_id':w.get('id'),'title':w.get('display_name'),'publication_year':w.get('publication_year'),'type':w.get('type'),'open_access':w.get('open_access'),'best_oa_location':w.get('best_oa_location'),'locations':w.get('locations',[]),'has_content':w.get('has_content') or {},'source':source,'source_url':url,'retrieved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'text_chars':len(text),'sha256':checksum,'format':fmt}
+              (d/'metadata.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
+              return {'doi':doi,'openalex_id':w.get('id'),'format':fmt,'text_chars':len(text),'sha256':checksum,'source':source,'source_url':url},None
+          def try_url(doi,w,label,url):
+              if not isinstance(url,str) or not url.startswith('http'): return None,'invalid_url'
+              try: r=get(url)
+              except Exception as e: return None,f'request_error:{type(e).__name__}'
+              if not r.ok or not r.content: return None,f'http_{r.status_code}'
+              result,err=materialise(doi,w,label,r.url,r.content,r.headers.get('content-type',''))
+              if result: return result,None
+              if 'html' in r.headers.get('content-type','').lower() or r.content.lstrip().startswith(b'<html'):
+                  for child in html_links(r.url,r.content)[:20]:
+                      try: rr=get(child)
+                      except Exception: continue
+                      if rr.ok and rr.content:
+                          result,err=materialise(doi,w,label,rr.url,rr.content,rr.headers.get('content-type',''))
+                          if result: return result,None
+              return None,err or f'http_{r.status_code}'
+
           state=json.loads(STATE.read_text()) if STATE.exists() else {'completed':{},'failed':{}}
           completed=set(state.get('completed',{})); rows=[]
           with MANIFEST.open(newline='',encoding='utf-8') as f:
               for row in csv.DictReader(f):
                   doi=norm(row.get('doi',''))
                   if doi and doi not in completed: rows.append(doi)
-          session=requests.Session();session.headers['User-Agent']='fulltexttest/openalex-free-daily/1.0'
-          successes=[];failures=[];content_requests=0
+          successes=[]; failures=[]; openalex_content_requests=0
           for doi in rows:
-              if len(successes)>=DAILY_LIMIT: break
-              r=get('https://api.openalex.org/works/https://doi.org/'+requests.utils.quote(doi),params={'api_key':key})
-              if not r.ok: failures.append({'doi':doi,'status':f'metadata_http_{r.status_code}'}); continue
-              w=r.json();has=w.get('has_content') or {};wid=(w.get('id') or '').rstrip('/').split('/')[-1]
-              if not wid or not (has.get('grobid_xml') or has.get('pdf')): failures.append({'doi':doi,'status':'no_openalex_content'}); continue
-              kind='tei-xml' if has.get('grobid_xml') else 'pdf'
-              url=f'https://content.openalex.org/works/{wid}.grobid-xml' if kind=='tei-xml' else f'https://content.openalex.org/works/{wid}.pdf'
-              content_requests+=1; r=get(url,params={'api_key':key})
-              if not r.ok: failures.append({'doi':doi,'status':f'{kind}_http_{r.status_code}','openalex_id':w.get('id')}); continue
-              data=r.content
-              if kind=='tei-xml':
-                  try:
-                      raw=gzip.decompress(data) if data[:2]==b'\x1f\x8b' else data; text=parse_xml(raw)
-                      if len(text)<3000: raise ValueError(f'parsed body only {len(text)} chars')
-                      ext='xml.gz';stored=gzip.compress(raw,compresslevel=6);checksum=hashlib.sha256(raw).hexdigest()
-                  except Exception as e: failures.append({'doi':doi,'status':'tei_parse_failure','error':repr(e),'openalex_id':w.get('id')}); continue
-              else:
-                  if not data.startswith(b'%PDF'): failures.append({'doi':doi,'status':'not_pdf','openalex_id':w.get('id')}); continue
-                  try:
-                      text,pages=parse_pdf(data)
-                      if len(text)<3000: raise ValueError(f'parsed text only {len(text)} chars')
-                      ext='pdf.gz';stored=gzip.compress(data,compresslevel=6);checksum=hashlib.sha256(data).hexdigest()
-                  except Exception as e: failures.append({'doi':doi,'status':'pdf_parse_failure','error':repr(e),'openalex_id':w.get('id')}); continue
-              slug=hashlib.sha256(doi.encode()).hexdigest()[:20]; d=STAGE/slug; d.mkdir(parents=True,exist_ok=True)
-              (d/f'fulltext.{ext}').write_bytes(stored)
-              audit={'doi':doi,'openalex_id':w.get('id'),'title':w.get('display_name'),'publication_year':w.get('publication_year'),'type':w.get('type'),'open_access':w.get('open_access'),'best_oa_location':w.get('best_oa_location'),'locations':w.get('locations',[]),'has_content':has,'source':'OpenAlex cached content','format':kind,'retrieved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'text_chars':len(text),'sha256':checksum}
-              (d/'metadata.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
-              successes.append({'doi':doi,'openalex_id':w.get('id'),'format':kind,'text_chars':len(text),'sha256':checksum}); time.sleep(0.25)
-          if not successes: raise SystemExit(f'No full texts retrieved; content requests={content_requests}, failures={len(failures)}')
+              if len(successes)>=DAILY_FULLTEXT_TARGET: break
+              try:
+                  r=get('https://api.openalex.org/works/https://doi.org/'+requests.utils.quote(doi),params={'api_key':key})
+                  if not r.ok: failures.append({'doi':doi,'status':f'metadata_http_{r.status_code}'}); continue
+                  w=r.json(); has=w.get('has_content') or {}; wid=(w.get('id') or '').rstrip('/').split('/')[-1]
+                  # First use free external OA copies exposed by OpenAlex.
+                  locs=([w.get('best_oa_location')] if w.get('best_oa_location') else [])+(w.get('locations') or [])
+                  seen=set(); got=None
+                  for loc in locs:
+                      if not isinstance(loc,dict): continue
+                      for field in ('pdf_url','landing_page_url'):
+                          u=loc.get(field)
+                          if u in seen: continue
+                          seen.add(u)
+                          got,err=try_url(doi,w,'OpenAlex OA location',u)
+                          if got: break
+                      if got: break
+                  # Europe PMC exact DOI route.
+                  if not got:
+                      try:
+                          e=get('https://www.ebi.ac.uk/europepmc/webservices/rest/search',params={'query':f'DOI:"{doi}"','resultType':'core','format':'json'})
+                          if e.ok:
+                              hits=e.json().get('resultList',{}).get('result',[]); exact=[h for h in hits if (h.get('doi') or '').strip().lower()==doi]
+                              if exact and exact[0].get('pmcid'):
+                                  u='https://www.ebi.ac.uk/europepmc/webservices/rest/'+exact[0]['pmcid']+'/fullTextXML'; got,err=try_url(doi,w,'Europe PMC XML',u)
+                      except Exception: pass
+                  # Unpaywall locations, still free of OpenAlex content credits.
+                  if not got:
+                      try:
+                          uemail=os.environ.get('UNPAYWALL_EMAIL','fulltexttest@example.org')
+                          up=get('https://api.unpaywall.org/v2/'+requests.utils.quote(doi),params={'email':uemail})
+                          if up.ok:
+                              d=up.json(); ulocs=([d.get('best_oa_location')] if d.get('best_oa_location') else [])+(d.get('oa_locations') or [])
+                              seen=set()
+                              for loc in ulocs:
+                                  if not isinstance(loc,dict): continue
+                                  for field in ('url_for_pdf','url_for_landing_page'):
+                                      u=loc.get(field)
+                                      if u in seen: continue
+                                      seen.add(u); got,err=try_url(doi,w,'Unpaywall OA location',u)
+                                      if got: break
+                                  if got: break
+                      except Exception: pass
+                  # Only now consume an OpenAlex cached-content download, capped at 100/day.
+                  if not got and openalex_content_requests < DAILY_OPENALEX_CONTENT_LIMIT and wid and (has.get('grobid_xml') or has.get('pdf')):
+                      kind='tei-xml' if has.get('grobid_xml') else 'pdf'; u=f'https://content.openalex.org/works/{wid}.grobid-xml' if kind=='tei-xml' else f'https://content.openalex.org/works/{wid}.pdf'
+                      openalex_content_requests += 1
+                      r2=get(u,params={'api_key':key})
+                      if r2.ok and r2.content:
+                          got,err=materialise(doi,w,'OpenAlex cached content',r2.url,r2.content,r2.headers.get('content-type',''))
+                      else: err=f'openalex_content_http_{r2.status_code}'
+                  if got: successes.append(got)
+                  else: failures.append({'doi':doi,'status':err or 'no_fulltext'})
+              except Exception as e:
+                  failures.append({'doi':doi,'status':'unexpected_error','error':repr(e)})
+
+          if not successes: raise SystemExit(f'No full texts retrieved; OpenAlex content requests={openalex_content_requests}, failures={len(failures)}')
           batch_date=time.strftime('%Y-%m-%d',time.gmtime()); run_id=os.environ.get('GITHUB_RUN_ID')
           tar=Path(f'openalex-free-{batch_date}-{run_id}.tar.gz')
           with tarfile.open(tar,'w:gz') as tf: tf.add(STAGE,arcname='fulltext')
-          daily={'date':batch_date,'run_id':run_id,'content_requests':content_requests,'successes':successes,'failures':failures,'archive':str(tar),'archive_sha256':hashlib.sha256(tar.read_bytes()).hexdigest()}
+          daily={'date':batch_date,'run_id':run_id,'openalex_content_requests':openalex_content_requests,'fulltexts_archived':len(successes),'target':DAILY_FULLTEXT_TARGET,'failures':failures,'archive':str(tar),'archive_sha256':hashlib.sha256(tar.read_bytes()).hexdigest()}
           headers={'Authorization':f'Bearer {token}'}
           r=requests.post('https://zenodo.org/api/deposit/depositions',json={},headers={**headers,'Content-Type':'application/json'},timeout=60); r.raise_for_status(); dep=r.json(); did=dep['id']; bucket=dep['links']['bucket']
-          meta={'metadata':{'title':f'fulltexttest OpenAlex full-text batch {batch_date} ({len(successes)} works)','upload_type':'dataset','publication_date':batch_date,'description':'Daily batch of OpenAlex cached full-text files retrieved under the project free daily content allowance. Files are retained as restricted-access research material; per-work provenance and SHA-256 checksums are included in the bundle.','access_right':'restricted','access_conditions':'Restricted to the depositor/project for research analysis; access may be granted by the depositor where appropriate.'}}
+          meta={'metadata':{'title':f'fulltexttest free full-text batch {batch_date} ({len(successes)} works)','upload_type':'dataset','publication_date':batch_date,'description':'Daily batch of full texts retrieved without exceeding the OpenAlex free daily content-download allowance. Per-work provenance and SHA-256 checksums are included in the bundle.','access_right':'restricted','access_conditions':'Restricted to the depositor/project for research analysis; access may be granted by the depositor where appropriate.'}}
           r=requests.put(f'https://zenodo.org/api/deposit/depositions/{did}',json=meta,headers={**headers,'Content-Type':'application/json'},timeout=60); r.raise_for_status()
           with open(tar,'rb') as fp:
               r=requests.put(f'{bucket}/{tar.name}',data=fp,headers=headers,timeout=1800); r.raise_for_status()
           r=requests.post(f'https://zenodo.org/api/deposit/depositions/{did}/actions/publish',headers=headers,timeout=120); r.raise_for_status(); published=r.json()
           daily['zenodo']={'record_id':published.get('id'),'doi':published.get('doi'),'doi_url':published.get('doi_url')}
           Path('daily-results.json').write_text(json.dumps(daily,indent=2,ensure_ascii=False),encoding='utf-8')
-          for x in successes: state.setdefault('completed',{})[x['doi']]={'date':batch_date,'run_id':run_id,'zenodo_record':published.get('id'),'zenodo_doi':published.get('doi'),'sha256':x['sha256'],'format':x['format']}
+          for x in successes: state.setdefault('completed',{})[x['doi']]={'date':batch_date,'run_id':run_id,'zenodo_record':published.get('id'),'zenodo_doi':published.get('doi'),'sha256':x['sha256'],'format':x['format'],'source':x['source'],'source_url':x['source_url']}
           for x in failures: state.setdefault('failed',{})[x['doi']]={'date':batch_date,'status':x['status']}
           STATE.write_text(json.dumps(state,indent=2,ensure_ascii=False),encoding='utf-8')
-          print(json.dumps({'content_requests':content_requests,'successes':len(successes),'failures':len(failures),'zenodo':daily['zenodo']},indent=2))
+          print(json.dumps({'openalex_content_requests':openalex_content_requests,'fulltexts_archived':len(successes),'target':DAILY_FULLTEXT_TARGET,'failures':len(failures),'zenodo':daily['zenodo']},indent=2))
       - name: Commit retrieval checkpoint
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add data/openalex_free_state.json
-          git diff --cached --quiet || git commit -m "Checkpoint daily OpenAlex full-text retrieval"
+          git diff --cached --quiet || git commit -m "Checkpoint daily full-text retrieval"
           git push
       - name: Upload audit only
         uses: actions/upload-artifact@v4
