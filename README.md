@@ -1,18 +1,11 @@
-# Full-text retrieval pipeline
+# Full-text retrieval test
 
-Reproducible R/GitHub workflow for discovering, retrieving, validating, and auditing complete scholarly full texts.
+The active retrieval path is now deliberately small and reproducible:
 
-## Principle
+**DOI → OpenAlex → Europe PMC → Unpaywall → identity/structure validation → parsed `fulltext.txt`**
 
-A HTTP 200 response is not a full text. A record is `verified_complete` only when the retrieved PDF, HTML, or XML contains substantial article content and identifiable references.
+Run `.github/workflows/openalex-three-source-retrieval.yml` manually and supply a DOI. An optional expected title can be supplied for an additional identity check.
 
-No extraction is permitted unless `full_text_status == verified_complete`.
+The workflow prefers OpenAlex content (GROBID TEI, then PDF), then exact-DOI Europe PMC XML, then Unpaywall OA locations. It emits the parsed text plus `metadata.json` and the source representation used. A result is only accepted when it passes the structural/identity gate; otherwise the run fails rather than returning an unverified document.
 
-## Layout
-
-- `scripts/` executable workflow entry points
-- `R/` reusable retrieval/validation functions
-- `data/` input records and schemas
-- `outputs/` generated retrieval manifests and downloaded full texts
-- `docs/` protocol and data dictionary
-- `.github/workflows/` auditable GitHub Actions
+The previous experimental scripts/workflows have been removed from `main` and preserved in the `archive/legacy-retrieval` branch, so the test history remains available without cluttering the active workflow.
