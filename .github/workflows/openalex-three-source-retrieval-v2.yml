@@ -1,4 +1,4 @@
-name: DOI full-text retrieval — OpenAlex + Europe PMC + Unpaywall v2
+name: DOI full-text retrieval — OpenAlex + Europe PMC + Unpaywall
 on:
   workflow_dispatch:
 jobs:
