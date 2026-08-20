@@ -1,18 +1,16 @@
 name: DOI full-text retrieval — OpenAlex + Europe PMC + Unpaywall
-
 on:
   workflow_dispatch:
-
 concurrency:
   group: doi-fulltext-retrieval
   cancel-in-progress: false
-
 jobs:
   retrieve:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         include:
           - {doi: '10.1016/j.chemosphere.2008.01.030', artifact_id: '10.1016_j.chemosphere.2008.01.030', title: 'Polybrominated diphenyl ethers (PBDEs) in farmed and wild salmon marketed in the Northeastern United States'}
@@ -38,8 +36,7 @@ jobs:
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+        with: {python-version: '3.12'}
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check --no-input requests lxml pypdf beautifulsoup4
       - name: Retrieve and parse full text
@@ -58,15 +55,18 @@ jobs:
           from pypdf import PdfReader
           from bs4 import BeautifulSoup
           OUT=Path('fulltext_output');OUT.mkdir(exist_ok=True)
-          s=requests.Session();s.headers.update({'User-Agent':'fulltexttest/doi-fulltext-retrieval/1.4','Accept-Language':'en-GB,en;q=0.9'})
+          s=requests.Session();s.headers.update({'User-Agent':'fulltexttest/doi-fulltext-retrieval/1.5','Accept-Language':'en-GB,en;q=0.9'})
           def norm_doi(x):
             x=(x or '').strip().lower();x=re.sub(r'^https?://doi.org/','',x);x=re.sub(r'^doi:\s*','',x);return x.rstrip(' .;,')
           doi=norm_doi(os.environ['DOI_INPUT']);expected_title=os.environ.get('TITLE_INPUT','').strip()
           def get(url,**kw):
-            for i in range(5):
+            for i in range(8):
               r=s.get(url,timeout=60,allow_redirects=True,**kw)
-              if r.status_code not in (429,500,502,503,504) or i==4:return r
-              time.sleep(2**i)
+              if r.status_code not in (429,500,502,503,504) or i==7:return r
+              ra=r.headers.get('Retry-After')
+              try: delay=min(60,float(ra)) if ra else min(60,2**i)
+              except ValueError: delay=min(60,2**i)
+              time.sleep(delay)
           def parse_pdf(data):
             p=OUT/'tmp.pdf';p.write_bytes(data)
             try:
@@ -82,6 +82,13 @@ jobs:
             title=' '.join((soup.title.get_text(' ',strip=True) if soup.title else '').split());text=' '.join(soup.get_text(' ',strip=True).split())
             links=[urljoin(current_url,a.get('href')) for a in soup.find_all('a',href=True)]
             pdf_links=[u for u in links if u.lower().split('?')[0].endswith('.pdf') or '.pdf?' in u.lower()]
+            for tag in soup.find_all(['a','button','meta','link']):
+              for value in tag.attrs.values():
+                vals=value if isinstance(value,list) else [value]
+                for v in vals:
+                  if isinstance(v,str) and 'pdf' in v.lower():
+                    u=urljoin(current_url,v)
+                    if u not in pdf_links:pdf_links.append(u)
             return title,text,pdf_links
           def consume(source,url,data,ctype):
             global current_url
@@ -98,7 +105,7 @@ jobs:
                 title,abstract,body,refs=parse_xml(raw);text='\n\n'.join(x for x in (title,abstract,body,refs) if x);ok=len(body)>=3000;a.update({'representation':'XML','title':title,'text_chars':len(text),'complete':ok})
                 if ok:(OUT/'fulltext.xml').write_bytes(raw)
               else:
-                title,text,pdf_links=parse_html(raw);ok='html' in low and len(text)>=5000;a.update({'representation':'HTML','title':title,'text_chars':len(text),'complete':ok,'pdf_links':pdf_links[:10]})
+                title,text,pdf_links=parse_html(raw);ok='html' in low and len(text)>=5000;a.update({'representation':'HTML','title':title,'text_chars':len(text),'complete':ok,'pdf_links':pdf_links[:20]})
                 if not ok and pdf_links:
                   for pu in pdf_links:
                     if fetch_try('Repository PDF linked from landing page',pu):ok=True;break
@@ -161,27 +168,23 @@ jobs:
     needs: retrieve
     runs-on: ubuntu-22.04
     steps:
-      - name: Download all per-DOI artifacts
+      - name: Download per-DOI artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: fulltext-*-${{ github.run_id }}
           path: collected
-          merge-multiple: false
       - name: Build consolidated results
         shell: python
         run: |
           import csv,json,glob
           ds=[json.load(open(p,encoding='utf-8')) for p in glob.glob('collected/**/metadata.json',recursive=True)]
           ds.sort(key=lambda d:d.get('doi',''))
-          keys=['doi','verified_complete','selected_source','openalex_http','openalex_pdf_http','europepmc_http','europepmc_matched','europepmc_fulltext_http','unpaywall_http','unpaywall_locations','attempt_count']
+          keys=['doi','verified_complete','selected_source','openalex_http','openalex_tei_http','openalex_pdf_http','europepmc_http','europepmc_matched','europepmc_fulltext_http','unpaywall_http','unpaywall_locations','attempt_count']
           rows=[]
-          for d in ds:
-            rows.append({'doi':d.get('doi'),'verified_complete':d.get('verified_complete'),'selected_source':d.get('selected_source'),'openalex_http':d.get('openalex',{}).get('http'),'openalex_pdf_http':d.get('openalex',{}).get('pdf_http'),'europepmc_http':d.get('europepmc',{}).get('http'),'europepmc_matched':d.get('europepmc',{}).get('matched'),'europepmc_fulltext_http':d.get('europepmc',{}).get('fulltext_http'),'unpaywall_http':d.get('unpaywall',{}).get('http'),'unpaywall_locations':len(d.get('unpaywall',{}).get('locations',[])),'attempt_count':len(d.get('attempts',[]))})
-          with open('batch-results.csv','w',newline='',encoding='utf-8') as f:
-            w=csv.DictWriter(f,fieldnames=keys);w.writeheader();w.writerows(rows)
+          for d in ds:rows.append({'doi':d.get('doi'),'verified_complete':d.get('verified_complete'),'selected_source':d.get('selected_source'),'openalex_http':d.get('openalex',{}).get('http'),'openalex_tei_http':d.get('openalex',{}).get('tei_http'),'openalex_pdf_http':d.get('openalex',{}).get('pdf_http'),'europepmc_http':d.get('europepmc',{}).get('http'),'europepmc_matched':d.get('europepmc',{}).get('matched'),'europepmc_fulltext_http':d.get('europepmc',{}).get('fulltext_http'),'unpaywall_http':d.get('unpaywall',{}).get('http'),'unpaywall_locations':len(d.get('unpaywall',{}).get('locations',[])),'attempt_count':len(d.get('attempts',[]))})
+          with open('batch-results.csv','w',newline='',encoding='utf-8') as f:w=csv.DictWriter(f,fieldnames=keys);w.writeheader();w.writerows(rows)
           json.dump(ds,open('batch-results.json','w',encoding='utf-8'),indent=2,ensure_ascii=False)
-      - name: Upload consolidated batch results
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: batch-results-${{ github.run_id }}
           path: |
