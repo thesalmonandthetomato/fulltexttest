@@ -1,14 +1,11 @@
-name: Layer 2 Lens full-text URL retrieval
+name: Layer 2 Google Scholar first-result full-text links
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: layer2-lens-fulltext
+  group: layer2-google-scholar
   cancel-in-progress: false
-
-env:
-  LENS_API_KEY: ${{ secrets.LENS_API_KEY }}
 
 jobs:
   retrieve:
@@ -20,150 +17,96 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: python -m pip install --disable-pip-version-check --no-input requests
+        run: python -m pip install --disable-pip-version-check --no-input requests beautifulsoup4
 
-      - name: Verify dependencies and Lens secret
-        shell: bash
-        env:
-          LENS_API_KEY: ${{ secrets.LENS_API_KEY }}
-        run: |
-          set -euo pipefail
-          python -c "import requests; print('requests', requests.__version__)"
-          test -n "$LENS_API_KEY" || (echo 'LENS_API_KEY secret is missing' && exit 1)
-
-      - name: Retrieve Lens OA PDF URLs and attempt downloads
+      - name: Search Google Scholar by DOI and inspect first result
         shell: python
-        env:
-          LENS_API_KEY: ${{ secrets.LENS_API_KEY }}
         run: |
-          import csv, json, os, re, time
+          import csv, json, time
           from pathlib import Path
-          from urllib.parse import urlparse
+          from urllib.parse import quote_plus, urljoin
           import requests
+          from bs4 import BeautifulSoup
 
-          OUT = Path('layer2_lens_results')
+          OUT = Path('layer2_google_scholar_results')
           OUT.mkdir(exist_ok=True)
-          session = requests.Session()
-          session.headers.update({'User-Agent': 'fulltexttest/layer2-lens/4.0'})
-          token = os.environ['LENS_API_KEY']
-          headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+          s = requests.Session()
+          s.headers.update({
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136.0 Safari/537.36',
+              'Accept-Language': 'en-GB,en;q=0.9',
+          })
 
           records = [
-            ("01", "10.1021/pr049840t", "Application of isotope coded affinity tag (ICAT) analysis for the identification of differentially expressed proteins following infection of atlantic salmon (Salmo salar) with infectious hematopoietic necrosis virus (IHNV) or Renibacterium salmoninarum (BKD)"),
-            ("03", "10.1201/9781003077770-78", "Fish Farming Technology - Biological basis for landbased farming of Atlantic salmon: Growth"),
-            ("08", "10.14288/1.0058967", "Physico-chemical aspects of sediment recovery at two abandoned salmon farm sites in British Columbia"),
-            ("10", "10.1111/jfb.12710", "Chronic stress of rainbow trout Oncorhynchus mykiss at high altitude: a field study"),
-            ("11", "10.15586/ijfs.v38i2.3600", "Environmental effects on nutrient composition of Turkish Salmon (Oncorhynchus mykiss): a comparison between marine and reservoir systems"),
-            ("12", "10.6084/m9.figshare.31147177.v1", "Salmon"),
-            ("13", "10.56093/ehyqc013", "Pathology of Aeromonas hydrophila infection in rainbow trout (Oncorhynchus mykiss) of Himachal Pradesh"),
-            ("14", "10.1007/s10750-026-06204-0", "Ecological patterns of benthic communities in relation to salmon aquaculture in the Inner Sea of Chiloé (southern Chile)"),
+            ("01", "10.1021/pr049840t"),
+            ("03", "10.1201/9781003077770-78"),
+            ("08", "10.14288/1.0058967"),
+            ("10", "10.1111/jfb.12710"),
+            ("11", "10.15586/ijfs.v38i2.3600"),
+            ("12", "10.6084/m9.figshare.31147177.v1"),
+            ("13", "10.56093/ehyqc013"),
+            ("14", "10.1007/s10750-026-06204-0"),
           ]
 
-          def norm_doi(s):
-              s = (s or '').strip().lower()
-              s = re.sub(r'^https?://doi.org/', '', s)
-              s = re.sub(r'^doi:\s*', '', s)
-              return s.rstrip(' .;,')
-
-          def lens_search(doi):
-              body = {
-                  'query': {'match': {'doi': doi}},
-                  'size': 10,
-                  'include': ['lens_id', 'title', 'external_ids', 'open_access']
+          def parse_first(html):
+              soup = BeautifulSoup(html, 'html.parser')
+              result = soup.select_one('div.gs_ri')
+              if not result:
+                  return None
+              title_el = result.select_one('h3.gs_rt')
+              links = []
+              for a in result.find_all('a'):
+                  label = a.get_text(' ', strip=True)
+                  if label in ('[PDF]', '[HTML]') and a.get('href'):
+                      item = {'label': label, 'url': urljoin('https://scholar.google.com/', a['href'])}
+                      if item not in links:
+                          links.append(item)
+              return {
+                  'title': title_el.get_text(' ', strip=True) if title_el else '',
+                  'result_url': title_el.find('a').get('href') if title_el and title_el.find('a') else '',
+                  'fulltext_links': links,
               }
-              for attempt in range(5):
-                  r = session.post('https://api.lens.org/scholarly/search', headers=headers, json=body, timeout=60)
-                  if r.status_code not in (429, 500, 502, 503, 504):
-                      return r
-                  if attempt < 4:
-                      time.sleep(min(30, 2 ** attempt))
-              return r
-
-          def download(url):
-              for attempt in range(5):
-                  r = session.get(url, timeout=60, allow_redirects=True)
-                  if r.status_code not in (429, 500, 502, 503, 504):
-                      return r
-                  if attempt < 4:
-                      time.sleep(min(30, 2 ** attempt))
-              return r
 
           audit = []
-          for n, doi, title in records:
-              row = {'record': n, 'doi': doi, 'database_title': title, 'lens_http': None, 'lens_result_count': 0, 'lens_exact_doi_results': 0, 'pdf_urls_found': 0, 'attempts': []}
+          for n, doi in records:
+              row = {'record': n, 'doi': doi, 'search_url': '', 'http': None, 'first_result_found': False, 'first_result_title': '', 'pdf_links': 0, 'html_links': 0, 'fulltext_links': []}
               try:
-                  r = lens_search(doi)
-                  row['lens_http'] = r.status_code
-                  (OUT / f'{n}_lens_search.json').write_text(r.text, encoding='utf-8')
-                  data = r.json() if r.ok else {}
-                  hits = data.get('data', []) or data.get('results', [])
-                  row['lens_result_count'] = len(hits)
-                  exact = []
-                  for h in hits:
-                      ids = h.get('external_ids', []) or []
-                      if isinstance(ids, dict):
-                          ids = [ids]
-                      dois = [x.get('value', '') for x in ids if isinstance(x, dict) and str(x.get('type', '')).lower() == 'doi']
-                      if norm_doi(h.get('doi', '')) == norm_doi(doi) or any(norm_doi(x) == norm_doi(doi) for x in dois):
-                          exact.append(h)
-                  row['lens_exact_doi_results'] = len(exact)
-                  if exact:
-                      h = exact[0]
-                      row['lens_id'] = h.get('lens_id', '')
-                      row['lens_title'] = h.get('title', '')
-                      oa = h.get('open_access', {}) or {}
-                      locations = oa.get('locations', []) or []
-                      pdf_urls = []
-                      for loc in locations:
-                          if not isinstance(loc, dict):
-                              continue
-                          urls = loc.get('pdf_urls', []) or []
-                          if isinstance(urls, str):
-                              urls = [urls]
-                          for url in urls:
-                              if url and url not in pdf_urls:
-                                  pdf_urls.append(url)
-                      row['pdf_urls_found'] = len(pdf_urls)
-                      (OUT / f'{n}_lens_record.json').write_text(json.dumps(h, indent=2, ensure_ascii=False), encoding='utf-8')
-                      for i, url in enumerate(pdf_urls, 1):
-                          att = {'rank': i, 'url': url, 'type': 'open_access.locations.pdf_urls'}
-                          try:
-                              rr = download(url)
-                              att['http'] = rr.status_code
-                              att['final_url'] = rr.url
-                              att['content_type'] = rr.headers.get('content-type', '')
-                              att['bytes'] = len(rr.content)
-                              if rr.ok and len(rr.content) >= 10000:
-                                  fname = f'{n}_lens_{i}.pdf'
-                                  (OUT / fname).write_bytes(rr.content)
-                                  att['file'] = fname
-                                  att['substantial'] = True
-                              else:
-                                  att['substantial'] = False
-                          except Exception as e:
-                              att['error'] = repr(e)
-                          row['attempts'].append(att)
+                  url = 'https://scholar.google.com/scholar?q=' + quote_plus('"' + doi + '"') + '&hl=en&num=10'
+                  row['search_url'] = url
+                  r = s.get(url, timeout=60)
+                  row['http'] = r.status_code
+                  (OUT / f'{n}_scholar_search.html').write_text(r.text, encoding='utf-8')
+                  if r.ok:
+                      parsed = parse_first(r.text)
+                      if parsed:
+                          row['first_result_found'] = True
+                          row['first_result_title'] = parsed['title']
+                          row['result_url'] = parsed['result_url']
+                          row['fulltext_links'] = parsed['fulltext_links']
+                          row['pdf_links'] = sum(x['label'] == '[PDF]' for x in parsed['fulltext_links'])
+                          row['html_links'] = sum(x['label'] == '[HTML]' for x in parsed['fulltext_links'])
+                          (OUT / f'{n}_first_result.json').write_text(json.dumps(parsed, indent=2, ensure_ascii=False), encoding='utf-8')
               except Exception as e:
                   row['error'] = repr(e)
               audit.append(row)
-              print(f"[{n}] {doi}: Lens HTTP={row['lens_http']} exact={row['lens_exact_doi_results']} PDF URLs={row['pdf_urls_found']} attempts={len(row['attempts'])}")
-              time.sleep(1)
+              print(f"[{n}] {doi}: HTTP={row['http']} first_result={row['first_result_found']} PDF={row['pdf_links']} HTML={row['html_links']}")
+              time.sleep(8)
 
-          for row in audit:
-              row['attempts_json'] = json.dumps(row.get('attempts', []), ensure_ascii=False)
-          fields = ['record', 'doi', 'database_title', 'lens_http', 'lens_result_count', 'lens_exact_doi_results', 'lens_id', 'lens_title', 'pdf_urls_found', 'attempts_json', 'error']
+          fields = ['record','doi','search_url','http','first_result_found','first_result_title','pdf_links','html_links','fulltext_links','result_url','error']
           with (OUT / 'audit.csv').open('w', newline='', encoding='utf-8') as f:
               w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
               w.writeheader()
-              w.writerows(audit)
+              for row in audit:
+                  rr = dict(row)
+                  rr['fulltext_links'] = json.dumps(rr.get('fulltext_links', []), ensure_ascii=False)
+                  w.writerow(rr)
           (OUT / 'audit.json').write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding='utf-8')
-          print('Completed Layer 2 Lens OA PDF URL retrieval.')
-          print('No automated article identity/completeness judgement has been made.')
+          print('Completed Google Scholar first-result full-text-link check.')
+          print('This layer identifies [PDF]/[HTML] links on the first Scholar result only; it does not download or verify the article.')
 
-      - name: Upload Layer 2 results
+      - name: Upload Google Scholar results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: layer2-lens-results-${{ github.run_id }}
-          path: layer2_lens_results/
+          name: layer2-google-scholar-results-${{ github.run_id }}
+          path: layer2_google_scholar_results/
           if-no-files-found: warn
