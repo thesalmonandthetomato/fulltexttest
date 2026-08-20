@@ -1,4 +1,4 @@
-name: OpenAlex daily free full-text retrieval
+name: OpenAlex daily external OA full-text retrieval
 on:
   workflow_dispatch:
   schedule:
@@ -26,23 +26,28 @@ jobs:
           echo '=== STORAGE CHECK ==='
           test -n "$ZENODO_TOKEN" || { echo 'ERROR: ZENODO_TOKEN is required. Refusing to download without durable storage.'; exit 1; }
           echo 'Zenodo token: present'
-      - name: Retrieve and archive daily full texts
+      - name: Retrieve external OA full texts using bulk OpenAlex metadata
         env:
           OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
           ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
         run: python scripts/openalex_daily_retrieve.py
       - name: Commit retrieval checkpoint
+        if: success()
         run: |
           echo 'CHECKPOINT: committing retrieval state to GitHub'
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add data/openalex_free_state.json
-          git diff --cached --quiet || git commit -m "Checkpoint daily full-text retrieval"
+          git diff --cached --quiet || git commit -m "Checkpoint daily external OA full-text retrieval"
           git push
           echo 'CHECKPOINT: GitHub state committed'
-      - name: Upload audit only
+      - name: Upload retrieval audit
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: openalex-free-audit-${{ github.run_id }}
-          path: daily-results.json
+          name: openalex-external-oa-audit-${{ github.run_id }}
+          path: |
+            daily-results.json
+            daily-pdf-manifest.csv
+          if-no-files-found: warn
           retention-days: 7
