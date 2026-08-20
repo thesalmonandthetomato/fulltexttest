@@ -1,0 +1,152 @@
+name: Europe PMC + CORE verified full text test
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: europepmc-core-test
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      CORE_API_KEY: ${{ secrets.CORE_API_KEY }}
+    steps:
+      - name: Checkout current default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests openpyxl lxml
+
+      - name: Run Europe PMC + CORE test
+        run: |
+          python - <<'PY'
+          import csv, json, os, re, time
+          from pathlib import Path
+          import requests
+          from lxml import etree
+          from openpyxl import load_workbook
+
+          ROOT = Path('.')
+          out = ROOT / 'epmc_core_results'
+          out.mkdir(exist_ok=True)
+          session = requests.Session()
+          session.headers.update({'User-Agent': 'fulltexttest/epmc-core-test'})
+
+          # Locate the master spreadsheet without assuming a filename.
+          candidates = list(ROOT.glob('*.xlsx')) + list(ROOT.glob('*.xlsm'))
+          if not candidates:
+              raise SystemExit('No spreadsheet found in repository checkout')
+          book = candidates[0]
+          wb = load_workbook(book, read_only=True, data_only=True)
+          ws = wb.active
+
+          rows = list(ws.iter_rows(values_only=True))
+          headers = [str(x).strip().lower() if x is not None else '' for x in rows[0]]
+          def find_col(names):
+              for n in names:
+                  for i,h in enumerate(headers):
+                      if n in h: return i
+              return None
+          doi_i = find_col(['doi'])
+          title_i = find_col(['title'])
+          if doi_i is None or title_i is None:
+              raise SystemExit(f'Could not identify DOI/title columns: {headers}')
+
+          records=[]
+          for r in rows[1:]:
+              doi = str(r[doi_i]).strip() if r[doi_i] is not None else ''
+              title = str(r[title_i]).strip() if r[title_i] is not None else ''
+              if doi and title: records.append({'doi':doi, 'title':title})
+          records = records[:15]
+          if len(records) != 15: raise SystemExit(f'Expected 15 records, found {len(records)}')
+
+          def norm(s):
+              return re.sub(r'[^a-z0-9]+',' ',s.lower()).strip()
+          def title_score(a,b):
+              aa=set(norm(a).split()); bb=set(norm(b).split())
+              return len(aa&bb)/max(1,len(aa|bb))
+          def clean_xml(xml):
+              root=etree.fromstring(xml)
+              return ' '.join(x.strip() for x in root.itertext() if x and x.strip())
+          def valid_text(text, target):
+              if len(text) < 1500: return False, 'too_short'
+              if 'window.dataLayer' in text or 'javascript' in text.lower()[:5000]: return False, 'page_config'
+              score=title_score(target,text[:12000])
+              return score >= 0.12, f'title_score={score:.3f}'
+
+          results=[]
+          for idx,rec in enumerate(records,1):
+              doi=rec['doi']; title=rec['title']; item={'n':idx,'doi':doi,'database_title':title,'europe_pmc':{},'core':{},'verified':False}
+              # Europe PMC: DOI search, then fullTextXML.
+              try:
+                  q=requests.utils.quote(f'DOI:"{doi}"')
+                  u=f'https://www.ebi.ac.uk/europepmc/webservices/rest/search?query={q}&format=json'
+                  j=session.get(u,timeout=30); j.raise_for_status(); data=j.json()
+                  hits=data.get('resultList',{}).get('result',[])
+                  if hits:
+                      pmcid=hits[0].get('pmcid')
+                      item['europe_pmc']={'found':True,'pmcid':pmcid,'title':hits[0].get('title')}
+                      if pmcid:
+                          x=session.get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML',timeout=45)
+                          if x.ok:
+                              text=clean_xml(x.content); ok,why=valid_text(text,title)
+                              item['europe_pmc'].update({'fulltext':True,'valid':ok,'reason':why})
+                              if ok:
+                                  item['europe_pmc']['text_file']=f'{idx:02d}_europepmc.txt'; (out/item['europe_pmc']['text_file']).write_text(text,encoding='utf-8')
+                  else: item['europe_pmc']={'found':False}
+              except Exception as e: item['europe_pmc']={'error':str(e)}
+
+              # CORE: DOI search. API key is never printed.
+              try:
+                  key=os.environ.get('CORE_API_KEY','')
+                  if not key: raise RuntimeError('CORE_API_KEY secret is not available')
+                  h={'Authorization':f'Bearer {key}'}
+                  u='https://api.core.ac.uk/v3/search/works'
+                  params={'q':f'doi:"{doi}"','limit':10}
+                  j=session.get(u,params=params,headers=h,timeout=45); j.raise_for_status(); data=j.json()
+                  hits=data.get('results',[]) or data.get('data',[])
+                  best=None
+                  for hit in hits:
+                      hd=str(hit.get('doi') or hit.get('metadata',{}).get('doi') or '').strip().lower()
+                      if hd.replace('https://doi.org/','') == doi.lower().replace('https://doi.org/',''): best=hit; break
+                  if best is None and hits: best=hits[0]
+                  if best:
+                      bt=best.get('title') or best.get('metadata',{}).get('title') or ''
+                      text=best.get('fullText') or best.get('full_text') or best.get('text') or ''
+                      item['core']={'found':True,'title':bt,'doi':best.get('doi') or best.get('metadata',{}).get('doi')}
+                      if text:
+                          ok,why=valid_text(text,title); item['core'].update({'valid':ok,'reason':why})
+                          if ok:
+                              item['core']['text_file']=f'{idx:02d}_core.txt'; (out/item['core']['text_file']).write_text(text,encoding='utf-8')
+                      else: item['core'].update({'valid':False,'reason':'no_fulltext_field'})
+                  else: item['core']={'found':False}
+              except Exception as e: item['core']={'error':str(e)}
+
+              item['verified']=bool(item['europe_pmc'].get('valid') or item['core'].get('valid'))
+              item['source']='Europe PMC' if item['europe_pmc'].get('valid') else ('CORE' if item['core'].get('valid') else '')
+              results.append(item); time.sleep(0.5)
+
+          (out/'audit.json').write_text(json.dumps(results,indent=2),encoding='utf-8')
+          with (out/'audit.csv').open('w',newline='',encoding='utf-8') as f:
+              w=csv.writer(f); w.writerow(['n','doi','database_title','epmc_valid','core_valid','verified','source'])
+              for r in results: w.writerow([r['n'],r['doi'],r['database_title'],r['europe_pmc'].get('valid',False),r['core'].get('valid',False),r['verified'],r['source']])
+          print('RESULTS')
+          for r in results: print(r['n'], r['doi'], 'VERIFIED='+str(r['verified']), 'SOURCE='+r['source'])
+          print('UNIQUE_VERIFIED',sum(r['verified'] for r in results),'OF',len(results))
+          PY
+
+      - name: Upload audit and verified text
+        uses: actions/upload-artifact@v4
+        with:
+          name: europepmc-core-verified-results-${{ github.run_id }}
+          path: epmc_core_results/
+          if-no-files-found: error
