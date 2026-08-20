@@ -1,0 +1,163 @@
+name: Layer 4 Google Scholar full-text retrieval
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: layer4-google-scholar-retrieve-fulltext
+  cancel-in-progress: false
+
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check --no-input requests beautifulsoup4 pypdf
+
+      - name: Search Scholar, retrieve first-result PDF/HTML, and extract text
+        shell: python
+        run: |
+          import csv, json, re, time
+          from pathlib import Path
+          from urllib.parse import quote_plus, urljoin
+          import requests
+          from bs4 import BeautifulSoup
+          from pypdf import PdfReader
+
+          OUT = Path('layer4_google_scholar_fulltext')
+          OUT.mkdir(exist_ok=True)
+          DOCS = OUT / 'documents'
+          DOCS.mkdir(exist_ok=True)
+          TEXT = OUT / 'text'
+          TEXT.mkdir(exist_ok=True)
+          s = requests.Session()
+          s.headers.update({
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+              'Accept-Language': 'en-GB,en;q=0.9'
+          })
+
+          records = [
+            ('01','10.1021/pr049840t'),
+            ('03','10.1201/9781003077770-78'),
+            ('08','10.14288/1.0058967'),
+            ('10','10.1111/jfb.12710'),
+            ('11','10.15586/ijfs.v38i2.3600'),
+            ('12','10.6084/m9.figshare.31147177.v1'),
+            ('13','10.56093/ehyqc013'),
+            ('14','10.1007/s10750-026-06204-0'),
+          ]
+
+          audit=[]
+          for n, doi in records:
+              row={'record':n,'doi':doi,'search_url':f'https://scholar.google.com/scholar?q={quote_plus(chr(34)+doi+chr(34))}', 'scholar_http':None,'first_result_found':False,'access_links':[],'retrievals':[]}
+              try:
+                  r=s.get(row['search_url'],timeout=60)
+                  row['scholar_http']=r.status_code
+                  (OUT/f'{n}_scholar_search.html').write_text(r.text,encoding='utf-8')
+                  soup=BeautifulSoup(r.text,'html.parser')
+                  result=soup.select_one('div.gs_r')
+                  if result:
+                      ri=result.select_one('div.gs_ri')
+                      row['first_result_found']=bool(ri)
+                      if ri:
+                          title_el=ri.select_one('h3.gs_rt')
+                          row['first_result_title']=title_el.get_text(' ',strip=True) if title_el else ''
+                          row['first_result_url']=title_el.select_one('a')['href'] if title_el and title_el.select_one('a') else ''
+                      ggs=result.select_one('div.gs_ggs')
+                      if ggs:
+                          for a in ggs.select('a'):
+                              href=a.get('href','')
+                              label_el=a.select_one('.gs_ctg2')
+                              label=label_el.get_text(' ',strip=True) if label_el else a.get_text(' ',strip=True)
+                              if href and label in ('[PDF]','[HTML]'):
+                                  row['access_links'].append({'label':label,'url':urljoin('https://scholar.google.com/',href)})
+
+                      # Try PDF first, then HTML. Stop after the first successfully retrieved document.
+                      for rank, link in enumerate(row['access_links'],1):
+                          att={'rank':rank,'label':link['label'],'scholar_url':link['url']}
+                          try:
+                              rr=s.get(link['url'],timeout=90,allow_redirects=True,stream=True)
+                              att['http']=rr.status_code
+                              att['final_url']=rr.url
+                              att['content_type']=rr.headers.get('content-type','')
+                              content=rr.content
+                              att['bytes']=len(content)
+                              ct=att['content_type'].lower()
+                              if rr.ok and (link['label']=='[PDF]' or 'application/pdf' in ct or content[:4]==b'%PDF'):
+                                  fname=f'{n}_scholar.pdf'
+                                  path=DOCS/fname
+                                  path.write_bytes(content)
+                                  att['saved_file']=str(path)
+                                  reader=PdfReader(str(path))
+                                  pages=[]
+                                  for page in reader.pages:
+                                      pages.append(page.extract_text() or '')
+                                  text='\n\n'.join(pages)
+                                  txtfile=TEXT/f'{n}_scholar.txt'
+                                  txtfile.write_text(text,encoding='utf-8')
+                                  att['format']='PDF'
+                                  att['pages']=len(reader.pages)
+                                  att['text_chars']=len(text)
+                                  att['text_file']=str(txtfile)
+                                  att['retrieved_fulltext']=len(text.strip())>0
+                                  row['retrievals'].append(att)
+                                  if att['retrieved_fulltext']:
+                                      break
+                              elif rr.ok and (link['label']=='[HTML]' or 'text/html' in ct):
+                                  html=content.decode(rr.encoding or 'utf-8',errors='replace')
+                                  (DOCS/f'{n}_scholar.html').write_text(html,encoding='utf-8')
+                                  hs=BeautifulSoup(html,'html.parser')
+                                  for bad in hs(['script','style','noscript']): bad.decompose()
+                                  text=hs.get_text('\n',strip=True)
+                                  txtfile=TEXT/f'{n}_scholar.txt'
+                                  txtfile.write_text(text,encoding='utf-8')
+                                  att['format']='HTML'
+                                  att['text_chars']=len(text)
+                                  att['text_file']=str(txtfile)
+                                  att['retrieved_fulltext']=len(text.strip())>0
+                                  row['retrievals'].append(att)
+                                  if att['retrieved_fulltext']:
+                                      break
+                              else:
+                                  att['retrieved_fulltext']=False
+                                  row['retrievals'].append(att)
+                          except Exception as e:
+                              att['error']=repr(e)
+                              att['retrieved_fulltext']=False
+                              row['retrievals'].append(att)
+                  else:
+                      row['page_note']='No first Scholar result found.'
+              except Exception as e:
+                  row['error']=repr(e)
+              (OUT/f'{n}_audit.json').write_text(json.dumps(row,indent=2,ensure_ascii=False),encoding='utf-8')
+              audit.append(row)
+              successful=sum(1 for x in row['retrievals'] if x.get('retrieved_fulltext'))
+              print(f"[{n}] {doi}: Scholar={row['scholar_http']} first={row['first_result_found']} access={len(row['access_links'])} successful_fulltext={successful}")
+              time.sleep(3)
+
+          fields=['record','doi','scholar_http','first_result_found','first_result_title','first_result_url','access_links_json','retrievals_json','error','page_note']
+          with (OUT/'audit.csv').open('w',newline='',encoding='utf-8') as f:
+              w=csv.DictWriter(f,fieldnames=fields)
+              w.writeheader()
+              for x in audit:
+                  w.writerow({
+                    'record':x.get('record'),'doi':x.get('doi'),'scholar_http':x.get('scholar_http'),
+                    'first_result_found':x.get('first_result_found'),'first_result_title':x.get('first_result_title',''),
+                    'first_result_url':x.get('first_result_url',''),'access_links_json':json.dumps(x.get('access_links',[]),ensure_ascii=False),
+                    'retrievals_json':json.dumps(x.get('retrievals',[]),ensure_ascii=False),'error':x.get('error',''),'page_note':x.get('page_note','')
+                  })
+          (OUT/'audit.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
+          print('Completed Layer 4. Success means an actual PDF or HTML document was retrieved and non-empty text was extracted. No identity/completeness verification was performed.')
+
+      - name: Upload retrieved full texts and audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: layer4-google-scholar-fulltext-${{ github.run_id }}
+          path: layer4_google_scholar_fulltext/
+          if-no-files-found: warn
