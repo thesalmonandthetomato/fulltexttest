@@ -1,10 +1,10 @@
-name: Layer 3 Google Scholar first-result full-text links
+name: Layer 2 Google Scholar first-result full-text links
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: layer3-google-scholar-first-result
+  group: layer2-google-scholar
   cancel-in-progress: false
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
           import requests
           from bs4 import BeautifulSoup
 
-          OUT = Path('layer3_google_scholar_results')
+          OUT = Path('layer2_google_scholar_results')
           OUT.mkdir(exist_ok=True)
           s = requests.Session()
           s.headers.update({
@@ -47,9 +47,6 @@ jobs:
             ('14','10.1007/s10750-026-06204-0'),
           ]
 
-          def norm_doi(x):
-              return re.sub(r'^doi:\s*|^https?://doi.org/', '', (x or '').strip().lower()).rstrip(' .;,')
-
           audit=[]
           for n, doi in records:
               row={'record':n,'doi':doi,'search_url':f'https://scholar.google.com/scholar?q={quote_plus(chr(34)+doi+chr(34))}', 'http':None,'first_result_found':False,'pdf_links':[],'html_links':[]}
@@ -61,23 +58,22 @@ jobs:
                   result=soup.select_one('div.gs_ri')
                   if result:
                       row['first_result_found']=True
-                      row['first_result_title']=(result.select_one('h3.gs_rt').get_text(' ',strip=True) if result.select_one('h3.gs_rt') else '')
-                      row['first_result_url']=(result.select_one('h3.gs_rt a')['href'] if result.select_one('h3.gs_rt a') else '')
-                      row['first_result_text']=result.get_text(' ',strip=True)
+                      title_el=result.select_one('h3.gs_rt')
+                      row['first_result_title']=(title_el.get_text(' ',strip=True) if title_el else '')
+                      row['first_result_url']=(title_el.select_one('a')['href'] if title_el and title_el.select_one('a') else '')
                       for a in result.select('a'):
-                          txt=a.get_text(' ',strip=True).lower()
+                          label=a.get_text(' ',strip=True)
                           href=a.get('href','')
                           if not href: continue
-                          # Scholar labels these access links as [PDF] / [HTML].
-                          if txt == '[pdf]' or txt.startswith('[pdf]'):
-                              row['pdf_links'].append({'label':a.get_text(' ',strip=True),'url':urljoin('https://scholar.google.com',href)})
-                          elif txt == '[html]' or txt.startswith('[html]'):
-                              row['html_links'].append({'label':a.get_text(' ',strip=True),'url':urljoin('https://scholar.google.com',href)})
+                          if label in ('[PDF]','[HTML]'):
+                              item={'label':label,'url':urljoin('https://scholar.google.com/',href)}
+                              if label == '[PDF]': row['pdf_links'].append(item)
+                              else: row['html_links'].append(item)
                   else:
                       row['page_note']='No gs_ri first result found; inspect saved HTML.'
               except Exception as e:
                   row['error']=repr(e)
-              (OUT/f'{n}_result.json').write_text(json.dumps(row,indent=2,ensure_ascii=False),encoding='utf-8')
+              (OUT/f'{n}_first_result.json').write_text(json.dumps(row,indent=2,ensure_ascii=False),encoding='utf-8')
               audit.append(row)
               print(f"[{n}] {doi}: HTTP={row['http']} first={row['first_result_found']} PDF={len(row['pdf_links'])} HTML={len(row['html_links'])}")
               time.sleep(3)
@@ -101,6 +97,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: layer3-google-scholar-results-${{ github.run_id }}
-          path: layer3_google_scholar_results/
+          name: layer2-google-scholar-results-${{ github.run_id }}
+          path: layer2_google_scholar_results/
           if-no-files-found: warn
