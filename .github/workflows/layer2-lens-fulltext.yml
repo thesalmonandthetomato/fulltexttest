@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LENS_API_TOKEN: ${{ secrets.LENS_API_TOKEN }}
+  LENS_API_KEY: ${{ secrets.LENS_API_KEY }}
 
 jobs:
   retrieve:
@@ -23,14 +23,18 @@ jobs:
         run: python -m pip install --disable-pip-version-check --no-input requests
 
       - name: Verify dependencies and Lens secret
+        shell: bash
+        env:
+          LENS_API_KEY: ${{ secrets.LENS_API_KEY }}
         run: |
+          set -euo pipefail
           python -c "import requests; print('requests', requests.__version__)"
-          test -n "$LENS_API_TOKEN" || (echo 'LENS_API_TOKEN secret is missing' && exit 1)
+          test -n "$LENS_API_KEY" || (echo 'LENS_API_KEY secret is missing' && exit 1)
 
-      - name: Retrieve Lens URLs and attempt full-text downloads
+      - name: Retrieve Lens URLs and attempt all candidate full-text downloads
         shell: python
         env:
-          LENS_API_TOKEN: ${{ secrets.LENS_API_TOKEN }}
+          LENS_API_KEY: ${{ secrets.LENS_API_KEY }}
         run: |
           import csv, json, os, re, time
           from pathlib import Path
@@ -40,15 +44,13 @@ jobs:
           OUT = Path('layer2_lens_results')
           OUT.mkdir(exist_ok=True)
           session = requests.Session()
-          session.headers.update({'User-Agent': 'fulltexttest/layer2-lens/1.0'})
-          token = os.environ['LENS_API_TOKEN']
+          session.headers.update({'User-Agent': 'fulltexttest/layer2-lens/2.0'})
+          token = os.environ['LENS_API_KEY']
           headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
 
-          # These are the records that did NOT end in an actual Tier-1 full-text file.
-          # Records 2,4,5,6,7,9 had Tier-1 full-text files and are deliberately excluded.
-          # Record 14 had OpenAlex metadata/content availability but no downloaded full text,
-          # so it is included here as requested. Record 15 has no DOI and is excluded because
-          # this Layer 2 pipeline is DOI -> Lens URL based.
+          # Layer 2 input: all DOI-bearing records that did not produce a Tier-1 full-text file.
+          # This includes record 14 because Tier 1 returned OpenAlex metadata but no full-text file.
+          # Record 15 has no DOI and therefore cannot enter a DOI -> Lens query.
           records = [
             ("01", "10.1021/pr049840t", "Application of isotope coded affinity tag (ICAT) analysis for the identification of differentially expressed proteins following infection of atlantic salmon (Salmo salar) with infectious hematopoietic necrosis virus (IHNV) or Renibacterium salmoninarum (BKD)"),
             ("03", "10.1201/9781003077770-78", "Fish Farming Technology - Biological basis for landbased farming of Atlantic salmon: Growth"),
@@ -72,15 +74,15 @@ jobs:
                   if r.status_code not in (429, 500, 502, 503, 504):
                       return r
                   if attempt < 4:
-                      wait = min(30, 2 ** attempt)
-                      time.sleep(wait)
+                      time.sleep(min(30, 2 ** attempt))
               return r
 
           def safe_ext(url, content_type):
               path = urlparse(url).path.lower()
-              if path.endswith('.pdf') or 'pdf' in (content_type or '').lower(): return '.pdf'
-              if path.endswith('.xml') or 'xml' in (content_type or '').lower(): return '.xml'
-              if path.endswith('.html') or 'html' in (content_type or '').lower(): return '.html'
+              ct = (content_type or '').lower()
+              if path.endswith('.pdf') or 'application/pdf' in ct: return '.pdf'
+              if path.endswith('.xml') or 'xml' in ct: return '.xml'
+              if 'html' in ct or path.endswith('.html') or path.endswith('.htm'): return '.html'
               return '.bin'
 
           audit=[]
@@ -102,9 +104,13 @@ jobs:
                   for h in hits:
                       ids=h.get('external_ids',[]) or []
                       dois=[]
+                      if isinstance(ids,dict):
+                          ids=[ids]
                       for x in ids:
-                          if isinstance(x,dict) and str(x.get('type','')).lower()=='doi': dois.append(x.get('value',''))
-                      if norm_doi(h.get('doi',''))==norm_doi(doi) or any(norm_doi(x)==norm_doi(doi) for x in dois): exact.append(h)
+                          if isinstance(x,dict) and str(x.get('type','')).lower()=='doi':
+                              dois.append(x.get('value',''))
+                      if norm_doi(h.get('doi',''))==norm_doi(doi) or any(norm_doi(x)==norm_doi(doi) for x in dois):
+                          exact.append(h)
                   row['lens_exact_doi_results']=len(exact)
                   if exact:
                       h=exact[0]
@@ -114,9 +120,14 @@ jobs:
                       row['urls_found']=len(source_urls)
                       (OUT/f'{n}_lens_record.json').write_text(json.dumps(h,indent=2,ensure_ascii=False),encoding='utf-8')
                       for i,su in enumerate(source_urls,1):
-                          if isinstance(su,dict): url=su.get('url',''); typ=su.get('type','')
-                          else: url=str(su); typ=''
-                          if not url: continue
+                          if isinstance(su,dict):
+                              url=su.get('url','')
+                              typ=su.get('type','')
+                          else:
+                              url=str(su)
+                              typ=''
+                          if not url:
+                              continue
                           att={'rank':i,'url':url,'type':typ}
                           try:
                               rr=request(url,allow_redirects=True)
@@ -129,25 +140,23 @@ jobs:
                                   fname=f'{n}_lens_{i}{ext}'
                                   (OUT/fname).write_bytes(rr.content)
                                   att['file']=fname
-                                  # Stop after the first substantial response; later URLs are recorded but not fetched.
-                                  row['retrieved_file']=fname
-                                  row['retrieved_url']=rr.url
-                                  row['retrieved_rank']=i
-                                  row['retrieved_bytes']=len(rr.content)
-                                  row['retrieved_content_type']=rr.headers.get('content-type','')
-                                  row['retrieved']=True
-                                  row['attempts'].append(att)
-                                  break
+                                  att['substantial']=True
+                              else:
+                                  att['substantial']=False
                           except Exception as e:
                               att['error']=repr(e)
                           row['attempts'].append(att)
+                          # Continue through ALL candidate URLs. We want a complete URL attempt audit,
+                          # not early stopping after an arbitrary successful response.
               except Exception as e:
                   row['error']=repr(e)
               audit.append(row)
-              print(f"[{n}] {doi}: Lens HTTP={row['lens_http']} URLs={row['urls_found']} retrieved={row.get('retrieved',False)}")
+              print(f"[{n}] {doi}: Lens HTTP={row['lens_http']} exact={row['lens_exact_doi_results']} URLs={row['urls_found']} attempts={len(row['attempts'])}")
               time.sleep(1)
 
-          fields=['record','doi','database_title','lens_http','lens_result_count','lens_exact_doi_results','lens_id','lens_title','urls_found','retrieved','retrieved_rank','retrieved_url','retrieved_file','retrieved_bytes','retrieved_content_type','error']
+          fields=['record','doi','database_title','lens_http','lens_result_count','lens_exact_doi_results','lens_id','lens_title','urls_found','attempts_json','error']
+          for row in audit:
+              row['attempts_json']=json.dumps(row.get('attempts',[]),ensure_ascii=False)
           with (OUT/'audit.csv').open('w',newline='',encoding='utf-8') as f:
               w=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore'); w.writeheader(); w.writerows(audit)
           (OUT/'audit.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
