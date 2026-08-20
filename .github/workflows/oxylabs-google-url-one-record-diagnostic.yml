@@ -1,0 +1,85 @@
+name: Oxylabs generic Google URL Scholar diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install requests
+        run: python -m pip install --disable-pip-version-check --no-input requests
+
+      - name: Make exactly one Oxylabs request using generic Google URL target
+        env:
+          OXYLABS_USERNAME: ${{ secrets.OXYLABS_USERNAME }}
+          OXYLABS_PASSWORD: ${{ secrets.OXYLABS_PASSWORD }}
+        shell: python
+        run: |
+          import json, os
+          from pathlib import Path
+          import requests
+
+          doi = '10.1021/pr049840t'
+          scholar_url = 'https://scholar.google.com/scholar?q=' + requests.utils.quote(doi, safe='') + '&hl=en&gl=us'
+          payload = {
+              'source': 'google',
+              'url': scholar_url,
+              'parse': False,
+          }
+
+          r = requests.post(
+              'https://realtime.oxylabs.io/v1/queries',
+              auth=(os.environ['OXYLABS_USERNAME'], os.environ['OXYLABS_PASSWORD']),
+              json=payload,
+              timeout=120,
+          )
+
+          out = Path('oxylabs_google_url_diagnostic')
+          out.mkdir()
+          (out / 'raw_response.bin').write_bytes(r.content)
+
+          audit = {
+              'doi': doi,
+              'request_payload': payload,
+              'http_status': r.status_code,
+              'content_type': r.headers.get('content-type', ''),
+              'content_length': len(r.content),
+          }
+          try:
+              body = r.json()
+              audit['response_json'] = body
+              results = body.get('results') if isinstance(body, dict) else None
+              if isinstance(results, list):
+                  audit['results_summary'] = []
+                  for item in results:
+                      if isinstance(item, dict):
+                          audit['results_summary'].append({
+                              'keys': sorted(item.keys()),
+                              'status_code': item.get('status_code'),
+                              'status': item.get('status'),
+                              'url': item.get('url'),
+                              'job_id': item.get('job_id'),
+                              'content_type': item.get('content_type'),
+                              'content_length': len(item.get('content','')) if isinstance(item.get('content'), str) else None,
+                          })
+          except Exception as exc:
+              audit['json_error'] = repr(exc)
+              audit['response_text_preview'] = r.text[:5000]
+
+          (out / 'audit.json').write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding='utf-8')
+          print(json.dumps({k:v for k,v in audit.items() if k != 'response_json'}, indent=2, ensure_ascii=False))
+          r.raise_for_status()
+
+      - name: Upload diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxylabs-google-url-scholar-diagnostic-${{ github.run_id }}
+          path: oxylabs_google_url_diagnostic/
+          if-no-files-found: warn
