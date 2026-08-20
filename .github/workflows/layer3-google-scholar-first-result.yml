@@ -55,22 +55,40 @@ jobs:
                   row['http']=r.status_code
                   (OUT/f'{n}_scholar_search.html').write_text(r.text,encoding='utf-8')
                   soup=BeautifulSoup(r.text,'html.parser')
-                  result=soup.select_one('div.gs_ri')
+
+                  # A Scholar result is a div.gs_r. The access-link sidebar
+                  # (e.g. [PDF] researchgate.net) is a sibling div.gs_ggs,
+                  # not a child of div.gs_ri. Use the complete first result row.
+                  result_row=soup.select_one('div.gs_r')
+                  result=result_row.select_one('div.gs_ri') if result_row else None
                   if result:
                       row['first_result_found']=True
                       title_el=result.select_one('h3.gs_rt')
                       row['first_result_title']=(title_el.get_text(' ',strip=True) if title_el else '')
                       row['first_result_url']=(title_el.select_one('a')['href'] if title_el and title_el.select_one('a') else '')
-                      for a in result.select('a'):
-                          label=a.get_text(' ',strip=True)
+
+                      for a in result_row.select('div.gs_ggs a'):
                           href=a.get('href','')
-                          if not href: continue
-                          if label in ('[PDF]','[HTML]'):
-                              item={'label':label,'url':urljoin('https://scholar.google.com/',href)}
-                              if label == '[PDF]': row['pdf_links'].append(item)
-                              else: row['html_links'].append(item)
+                          if not href:
+                              continue
+                          label_el=a.select_one('.gs_ctg2')
+                          label=(label_el.get_text(' ',strip=True) if label_el else a.get_text(' ',strip=True)).strip()
+                          label_upper=label.upper()
+                          if label_upper.startswith('[PDF]'):
+                              row['pdf_links'].append({'label':label,'url':urljoin('https://scholar.google.com/',href)})
+                          elif label_upper.startswith('[HTML]'):
+                              row['html_links'].append({'label':label,'url':urljoin('https://scholar.google.com/',href)})
+
+                      # Preserve all access links seen on the first result for auditing.
+                      row['access_links_seen']=[]
+                      for a in result_row.select('div.gs_ggs a'):
+                          href=a.get('href','')
+                          if href:
+                              label_el=a.select_one('.gs_ctg2')
+                              label=(label_el.get_text(' ',strip=True) if label_el else a.get_text(' ',strip=True)).strip()
+                              row['access_links_seen'].append({'label':label,'url':urljoin('https://scholar.google.com/',href)})
                   else:
-                      row['page_note']='No gs_ri first result found; inspect saved HTML.'
+                      row['page_note']='No first gs_r result found; inspect saved HTML.'
               except Exception as e:
                   row['error']=repr(e)
               (OUT/f'{n}_first_result.json').write_text(json.dumps(row,indent=2,ensure_ascii=False),encoding='utf-8')
@@ -78,7 +96,7 @@ jobs:
               print(f"[{n}] {doi}: HTTP={row['http']} first={row['first_result_found']} PDF={len(row['pdf_links'])} HTML={len(row['html_links'])}")
               time.sleep(3)
 
-          fields=['record','doi','search_url','http','first_result_found','first_result_title','first_result_url','pdf_count','html_count','pdf_links_json','html_links_json','error','page_note']
+          fields=['record','doi','search_url','http','first_result_found','first_result_title','first_result_url','pdf_count','html_count','pdf_links_json','html_links_json','access_links_seen_json','error','page_note']
           with (OUT/'audit.csv').open('w',newline='',encoding='utf-8') as f:
               w=csv.DictWriter(f,fieldnames=fields)
               w.writeheader()
@@ -88,10 +106,12 @@ jobs:
                     'first_result_found':x.get('first_result_found'),'first_result_title':x.get('first_result_title',''),
                     'first_result_url':x.get('first_result_url',''),'pdf_count':len(x.get('pdf_links',[])),
                     'html_count':len(x.get('html_links',[])),'pdf_links_json':json.dumps(x.get('pdf_links',[])),
-                    'html_links_json':json.dumps(x.get('html_links',[])),'error':x.get('error',''),'page_note':x.get('page_note','')
+                    'html_links_json':json.dumps(x.get('html_links',[])),
+                    'access_links_seen_json':json.dumps(x.get('access_links_seen',[])),
+                    'error':x.get('error',''),'page_note':x.get('page_note','')
                   })
           (OUT/'audit.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
-          print('Completed Layer 3 Google Scholar first-result audit. No full text was downloaded and no match/completeness judgement was made.')
+          print('Completed Layer 3 Google Scholar first-result access-link audit. No full text was downloaded and no match/completeness judgement was made.')
 
       - name: Upload Layer 3 Scholar audit
         if: always()
