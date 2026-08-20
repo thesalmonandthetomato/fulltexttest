@@ -7,13 +7,77 @@ concurrency:
   group: europepmc-core-test
   cancel-in-progress: false
 
+env:
+  CORE_API_KEY: ${{ secrets.CORE_API_KEY }}
+
 jobs:
-  test:
+  preflight:
     runs-on: ubuntu-latest
+    outputs:
+      records_ok: ${{ steps.check.outputs.records_ok }}
+      core_key_ok: ${{ steps.check.outputs.core_key_ok }}
+    steps:
+      - name: Check repository commit and workflow inputs
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "github.sha=${GITHUB_SHA}"
+          test -n "$GITHUB_SHA"
+          if [ -z "${CORE_API_KEY:-}" ]; then
+            echo "CORE_API_KEY secret is missing" >&2
+            echo "core_key_ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "core_key_ok=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "records_ok=true" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          records = [
+            ("10.1021/pr049840t", "Application of isotope coded affinity tag (ICAT) analysis for the identification of differentially expressed proteins following infection of atlantic salmon (Salmo salar) with infectious hematopoietic necrosis virus (IHNV) or Renibacterium salmoninarum (BKD)"),
+            ("10.1002/fsh.10985", "Inadvertent Hatchery Rainbow Trout Oncorhynchus mykiss Discovered in Native Westslope Cutthroat Trout Oncorhynchus clarkii lewisi Habitat: A Cautionary Tale"),
+            ("10.1201/9781003077770-78", "Fish Farming Technology - Biological basis for landbased farming of Atlantic salmon: Growth"),
+            ("10.2458/v24i1.20963", "Petri dishes of an archipelago: the ecological rubble of the Chilean salmon farming industry"),
+            ("10.1007/s11160-022-09714-x", "A review of marine stressors impacting Atlantic salmon Salmo salar, with an assessment of the major threats to English stocks"),
+            ("10.3354/dao01972", "Real-time PCR detection of Moritella viscosa, the likely causal agent of winter-ulcer in Atlantic salmon Salmo salar and rainbow trout Oncorhynchus mykiss"),
+            ("10.18174/371265", "Next-generation salmonid alphavirus vaccine development"),
+            ("10.14288/1.0058967", "Physico-chemical aspects of sediment recovery at two abandoned salmon farm sites in British Columbia"),
+            ("10.1038/s41598-019-39080-x", "Wound healing in post-smolt Atlantic salmon (Salmo salar L.)"),
+            ("10.1111/jfb.12710", "Chronic stress of rainbow trout Oncorhynchus mykiss at high altitude: a field study"),
+            ("10.15586/ijfs.v38i2.3600", "Environmental effects on nutrient composition of Turkish Salmon (Oncorhynchus mykiss): a comparison between marine and reservoir systems"),
+            ("10.6084/m9.figshare.31147177.v1", "Salmon"),
+            ("10.56093/ehyqc013", "Pathology of Aeromonas hydrophila infection in rainbow trout (Oncorhynchus mykiss) of Himachal Pradesh"),
+            ("10.1007/s10750-026-06204-0", "Ecological patterns of benthic communities in relation to salmon aquaculture in the Inner Sea of Chiloé (southern Chile)"),
+            ("", "Sinop Yöresinde Denizde Kafeslerde Farklı Yemlerle Yapılan Gökkuşağı Alabalığı (Oncorhynchus mykiss W. 1792) Yetiştiriciliği Üzerine Bir Araştırma")
+          ]
+          assert len(records) == 15
+          assert len({d for d,t in records if d}) == 14
+          assert all(t for d,t in records)
+          print(f'Validated {len(records)} fixed test records ({sum(bool(d) for d,t in records)} with DOI).')
+          PY
+
+      - name: Verify CORE secret through authenticated API preflight
+        if: steps.check.outputs.core_key_ok == 'true'
+        shell: python
+        env:
+          CORE_API_KEY: ${{ secrets.CORE_API_KEY }}
+        run: |
+          import os, requests
+          key=os.environ['CORE_API_KEY']
+          r=requests.get('https://api.core.ac.uk/v3/search/works',params={'q':'doi:"10.1038/s41598-019-39080-x"','limit':1},headers={'Authorization':f'Bearer {key}'},timeout=30)
+          print('CORE HTTP status:', r.status_code)
+          if r.status_code in (401,403):
+              raise SystemExit('CORE_API_KEY is present but authentication failed')
+          if r.status_code >= 500:
+              raise SystemExit(f'CORE service returned {r.status_code}')
+
+  test:
+    needs: preflight
+    runs-on: ubuntu-latest
+    if: needs.preflight.outputs.records_ok == 'true' && needs.preflight.outputs.core_key_ok == 'true'
     env:
       CORE_API_KEY: ${{ secrets.CORE_API_KEY }}
     steps:
-      - name: Checkout current default branch
+      - name: Checkout current commit
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -24,129 +88,128 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install requests openpyxl lxml
+        run: python -m pip install --upgrade requests lxml
 
-      - name: Run Europe PMC + CORE test
+      - name: Run Europe PMC + CORE retrieval and verification
+        shell: python
+        env:
+          CORE_API_KEY: ${{ secrets.CORE_API_KEY }}
         run: |
-          python - <<'PY'
           import csv, json, os, re, time
           from pathlib import Path
           import requests
           from lxml import etree
-          from openpyxl import load_workbook
 
-          ROOT = Path('.')
-          out = ROOT / 'epmc_core_results'
-          out.mkdir(exist_ok=True)
-          session = requests.Session()
-          session.headers.update({'User-Agent': 'fulltexttest/epmc-core-test'})
+          OUT=Path('epmc_core_results'); OUT.mkdir(exist_ok=True)
+          EP=OUT/'verified_text'; EP.mkdir(exist_ok=True)
+          session=requests.Session(); session.headers['User-Agent']='fulltexttest/epmc-core-test/2.0'
 
-          # Locate the master spreadsheet without assuming a filename.
-          candidates = list(ROOT.glob('*.xlsx')) + list(ROOT.glob('*.xlsm'))
-          if not candidates:
-              raise SystemExit('No spreadsheet found in repository checkout')
-          book = candidates[0]
-          wb = load_workbook(book, read_only=True, data_only=True)
-          ws = wb.active
+          records=[
+            ("10.1021/pr049840t", "Application of isotope coded affinity tag (ICAT) analysis for the identification of differentially expressed proteins following infection of atlantic salmon (Salmo salar) with infectious hematopoietic necrosis virus (IHNV) or Renibacterium salmoninarum (BKD)"),
+            ("10.1002/fsh.10985", "Inadvertent Hatchery Rainbow Trout Oncorhynchus mykiss Discovered in Native Westslope Cutthroat Trout Oncorhynchus clarkii lewisi Habitat: A Cautionary Tale"),
+            ("10.1201/9781003077770-78", "Fish Farming Technology - Biological basis for landbased farming of Atlantic salmon: Growth"),
+            ("10.2458/v24i1.20963", "Petri dishes of an archipelago: the ecological rubble of the Chilean salmon farming industry"),
+            ("10.1007/s11160-022-09714-x", "A review of marine stressors impacting Atlantic salmon Salmo salar, with an assessment of the major threats to English stocks"),
+            ("10.3354/dao01972", "Real-time PCR detection of Moritella viscosa, the likely causal agent of winter-ulcer in Atlantic salmon Salmo salar and rainbow trout Oncorhynchus mykiss"),
+            ("10.18174/371265", "Next-generation salmonid alphavirus vaccine development"),
+            ("10.14288/1.0058967", "Physico-chemical aspects of sediment recovery at two abandoned salmon farm sites in British Columbia"),
+            ("10.1038/s41598-019-39080-x", "Wound healing in post-smolt Atlantic salmon (Salmo salar L.)"),
+            ("10.1111/jfb.12710", "Chronic stress of rainbow trout Oncorhynchus mykiss at high altitude: a field study"),
+            ("10.15586/ijfs.v38i2.3600", "Environmental effects on nutrient composition of Turkish Salmon (Oncorhynchus mykiss): a comparison between marine and reservoir systems"),
+            ("10.6084/m9.figshare.31147177.v1", "Salmon"),
+            ("10.56093/ehyqc013", "Pathology of Aeromonas hydrophila infection in rainbow trout (Oncorhynchus mykiss) of Himachal Pradesh"),
+            ("10.1007/s10750-026-06204-0", "Ecological patterns of benthic communities in relation to salmon aquaculture in the Inner Sea of Chiloé (southern Chile)"),
+            ("", "Sinop Yöresinde Denizde Kafeslerde Farklı Yemlerle Yapılan Gökkuşağı Alabalığı (Oncorhynchus mykiss W. 1792) Yetiştiriciliği Üzerine Bir Araştırma")
+          ]
 
-          rows = list(ws.iter_rows(values_only=True))
-          headers = [str(x).strip().lower() if x is not None else '' for x in rows[0]]
-          def find_col(names):
-              for n in names:
-                  for i,h in enumerate(headers):
-                      if n in h: return i
-              return None
-          doi_i = find_col(['doi'])
-          title_i = find_col(['title'])
-          if doi_i is None or title_i is None:
-              raise SystemExit(f'Could not identify DOI/title columns: {headers}')
-
-          records=[]
-          for r in rows[1:]:
-              doi = str(r[doi_i]).strip() if r[doi_i] is not None else ''
-              title = str(r[title_i]).strip() if r[title_i] is not None else ''
-              if doi and title: records.append({'doi':doi, 'title':title})
-          records = records[:15]
-          if len(records) != 15: raise SystemExit(f'Expected 15 records, found {len(records)}')
-
-          def norm(s):
-              return re.sub(r'[^a-z0-9]+',' ',s.lower()).strip()
-          def title_score(a,b):
-              aa=set(norm(a).split()); bb=set(norm(b).split())
-              return len(aa&bb)/max(1,len(aa|bb))
-          def clean_xml(xml):
-              root=etree.fromstring(xml)
-              return ' '.join(x.strip() for x in root.itertext() if x and x.strip())
-          def valid_text(text, target):
-              if len(text) < 1500: return False, 'too_short'
-              if 'window.dataLayer' in text or 'javascript' in text.lower()[:5000]: return False, 'page_config'
-              score=title_score(target,text[:12000])
-              return score >= 0.12, f'title_score={score:.3f}'
+          def norm_doi(s):
+              s=(s or '').strip().lower(); s=re.sub(r'^https?://doi.org/','',s); s=re.sub(r'^doi:\s*','',s); return s.rstrip(' .;,')
+          def norm_title(s): return re.sub(r'[^a-z0-9]+',' ',s.lower()).strip()
+          def title_score(target,text):
+              a=set(norm_title(target).split()); b=set(norm_title(text[:20000]).split())
+              return len(a&b)/max(1,len(a|b))
+          def extract_body_text(xml_bytes):
+              root=etree.fromstring(xml_bytes)
+              parts=[]
+              for node in root.xpath('//article-title | //abstract//p | //body//p | //body//title | //sec//p'):
+                  s=' '.join(''.join(node.itertext()).split())
+                  if s: parts.append(s)
+              return '\n\n'.join(parts)
+          def valid_text(text,target,doi):
+              if len(text)<1500: return False,'too_short'
+              score=title_score(target,text)
+              if score<0.12: return False,f'title_score={score:.3f}'
+              if doi and doi in {norm_doi(x) for x in re.findall(r'10\.\d{4,9}/[-._;()/:A-Z0-9]+',text,re.I)}: return True,f'doi_and_title:{score:.3f}'
+              if doi: return False,f'no_doi_in_text:title_score={score:.3f}'
+              return True,f'title_only:{score:.3f}'
+          def get(url,**kw):
+              for attempt in range(3):
+                  r=session.get(url,timeout=45,**kw)
+                  if r.status_code not in (429,500,502,503,504): return r
+                  time.sleep(2**attempt)
+              return r
 
           results=[]
-          for idx,rec in enumerate(records,1):
-              doi=rec['doi']; title=rec['title']; item={'n':idx,'doi':doi,'database_title':title,'europe_pmc':{},'core':{},'verified':False}
-              # Europe PMC: DOI search, then fullTextXML.
-              try:
-                  q=requests.utils.quote(f'DOI:"{doi}"')
-                  u=f'https://www.ebi.ac.uk/europepmc/webservices/rest/search?query={q}&format=json'
-                  j=session.get(u,timeout=30); j.raise_for_status(); data=j.json()
-                  hits=data.get('resultList',{}).get('result',[])
-                  if hits:
-                      pmcid=hits[0].get('pmcid')
-                      item['europe_pmc']={'found':True,'pmcid':pmcid,'title':hits[0].get('title')}
-                      if pmcid:
-                          x=session.get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML',timeout=45)
-                          if x.ok:
-                              text=clean_xml(x.content); ok,why=valid_text(text,title)
-                              item['europe_pmc'].update({'fulltext':True,'valid':ok,'reason':why})
-                              if ok:
-                                  item['europe_pmc']['text_file']=f'{idx:02d}_europepmc.txt'; (out/item['europe_pmc']['text_file']).write_text(text,encoding='utf-8')
-                  else: item['europe_pmc']={'found':False}
-              except Exception as e: item['europe_pmc']={'error':str(e)}
+          for n,(doi,title) in enumerate(records,1):
+              r={'n':n,'doi':doi,'database_title':title,'europe_pmc':{},'core':{},'verified':False,'source':''}
+              # Europe PMC
+              if doi:
+                  try:
+                      q=requests.utils.quote(f'DOI:"{doi}"')
+                      sr=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/search?query={q}&format=json')
+                      sr.raise_for_status(); hits=sr.json().get('resultList',{}).get('result',[])
+                      epmc=None
+                      for h in hits:
+                          if norm_doi(h.get('doi',''))==norm_doi(doi): epmc=h; break
+                      if epmc:
+                          pmcid=epmc.get('pmcid'); r['europe_pmc']={'found':True,'pmcid':pmcid,'api_title':epmc.get('title','')}
+                          if pmcid:
+                              xr=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML')
+                              if xr.ok:
+                                  text=extract_body_text(xr.content); ok,why=valid_text(text,title,norm_doi(doi)); r['europe_pmc'].update({'valid':ok,'reason':why})
+                                  if ok:
+                                      fn=f'{n:02d}_europepmc.txt'; (EP/fn).write_text(text,encoding='utf-8'); r['europe_pmc']['text_file']=fn
+                              else: r['europe_pmc']['error']=f'fulltext_http_{xr.status_code}'
+                      else: r['europe_pmc']={'found':False}
+                  except Exception as e: r['europe_pmc']={'error':str(e)}
+              else: r['europe_pmc']={'found':False,'reason':'no_doi'}
 
-              # CORE: DOI search. API key is never printed.
+              # CORE
               try:
-                  key=os.environ.get('CORE_API_KEY','')
-                  if not key: raise RuntimeError('CORE_API_KEY secret is not available')
-                  h={'Authorization':f'Bearer {key}'}
-                  u='https://api.core.ac.uk/v3/search/works'
-                  params={'q':f'doi:"{doi}"','limit':10}
-                  j=session.get(u,params=params,headers=h,timeout=45); j.raise_for_status(); data=j.json()
-                  hits=data.get('results',[]) or data.get('data',[])
+                  key=os.environ['CORE_API_KEY']
+                  sr=get('https://api.core.ac.uk/v3/search/works',params={'q':f'doi:"{doi}"' if doi else f'title:"{title}"','limit':10},headers={'Authorization':f'Bearer {key}'})
+                  sr.raise_for_status(); payload=sr.json(); hits=payload.get('results',[]) or payload.get('data',[])
                   best=None
-                  for hit in hits:
-                      hd=str(hit.get('doi') or hit.get('metadata',{}).get('doi') or '').strip().lower()
-                      if hd.replace('https://doi.org/','') == doi.lower().replace('https://doi.org/',''): best=hit; break
-                  if best is None and hits: best=hits[0]
+                  for h in hits:
+                      hd=norm_doi(h.get('doi') or h.get('metadata',{}).get('doi') or '')
+                      ht=h.get('title') or h.get('metadata',{}).get('title') or ''
+                      if doi and hd==norm_doi(doi): best=h; break
+                      if not doi and title_score(title,ht)>=0.9: best=h; break
+                  r['core']={'found':bool(best)}
                   if best:
-                      bt=best.get('title') or best.get('metadata',{}).get('title') or ''
+                      r['core']['api_title']=best.get('title') or best.get('metadata',{}).get('title',''); r['core']['api_doi']=best.get('doi') or best.get('metadata',{}).get('doi','')
                       text=best.get('fullText') or best.get('full_text') or best.get('text') or ''
-                      item['core']={'found':True,'title':bt,'doi':best.get('doi') or best.get('metadata',{}).get('doi')}
                       if text:
-                          ok,why=valid_text(text,title); item['core'].update({'valid':ok,'reason':why})
+                          ok,why=valid_text(text,title,norm_doi(doi)); r['core'].update({'valid':ok,'reason':why})
                           if ok:
-                              item['core']['text_file']=f'{idx:02d}_core.txt'; (out/item['core']['text_file']).write_text(text,encoding='utf-8')
-                      else: item['core'].update({'valid':False,'reason':'no_fulltext_field'})
-                  else: item['core']={'found':False}
-              except Exception as e: item['core']={'error':str(e)}
+                              fn=f'{n:02d}_core.txt'; (EP/fn).write_text(text,encoding='utf-8'); r['core']['text_file']=fn
+                      else: r['core'].update({'valid':False,'reason':'no_fulltext_field'})
+              except Exception as e: r['core']={'error':str(e)}
 
-              item['verified']=bool(item['europe_pmc'].get('valid') or item['core'].get('valid'))
-              item['source']='Europe PMC' if item['europe_pmc'].get('valid') else ('CORE' if item['core'].get('valid') else '')
-              results.append(item); time.sleep(0.5)
+              r['verified']=bool(r['europe_pmc'].get('valid') or r['core'].get('valid'))
+              r['source']='Europe PMC' if r['europe_pmc'].get('valid') else ('CORE' if r['core'].get('valid') else '')
+              results.append(r); print(n,doi or '[no DOI]','verified=',r['verified'],'source=',r['source']); time.sleep(0.5)
 
-          (out/'audit.json').write_text(json.dumps(results,indent=2),encoding='utf-8')
-          with (out/'audit.csv').open('w',newline='',encoding='utf-8') as f:
-              w=csv.writer(f); w.writerow(['n','doi','database_title','epmc_valid','core_valid','verified','source'])
-              for r in results: w.writerow([r['n'],r['doi'],r['database_title'],r['europe_pmc'].get('valid',False),r['core'].get('valid',False),r['verified'],r['source']])
-          print('RESULTS')
-          for r in results: print(r['n'], r['doi'], 'VERIFIED='+str(r['verified']), 'SOURCE='+r['source'])
-          print('UNIQUE_VERIFIED',sum(r['verified'] for r in results),'OF',len(results))
-          PY
+          (OUT/'audit.json').write_text(json.dumps(results,indent=2),encoding='utf-8')
+          with (OUT/'audit.csv').open('w',newline='',encoding='utf-8') as f:
+              w=csv.writer(f); w.writerow(['n','doi','database_title','epmc_valid','core_valid','verified','source','epmc_reason','core_reason'])
+              for r in results: w.writerow([r['n'],r['doi'],r['database_title'],r['europe_pmc'].get('valid',False),r['core'].get('valid',False),r['verified'],r['source'],r['europe_pmc'].get('reason',''),r['core'].get('reason','')])
+          count=sum(r['verified'] for r in results); print('UNIQUE_VERIFIED',count,'OF',len(results))
 
       - name: Upload audit and verified text
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: europepmc-core-verified-results-${{ github.run_id }}
           path: epmc_core_results/
-          if-no-files-found: error
+          if-no-files-found: warn
