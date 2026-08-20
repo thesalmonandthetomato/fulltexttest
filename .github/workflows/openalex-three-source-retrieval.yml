@@ -2,15 +2,6 @@ name: DOI full-text retrieval — OpenAlex + Europe PMC + Unpaywall
 
 on:
   workflow_dispatch:
-    inputs:
-      doi:
-        description: DOI to retrieve
-        required: true
-        type: string
-      title:
-        description: Optional expected article title for identity checking
-        required: false
-        type: string
 
 concurrency:
   group: doi-fulltext-retrieval
@@ -20,6 +11,51 @@ jobs:
   retrieve:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - doi: '10.1016/j.chemosphere.2008.01.030'
+            title: 'Polybrominated diphenyl ethers (PBDEs) in farmed and wild salmon marketed in the Northeastern United States'
+          - doi: '10.1186/s12862-018-1294-y'
+            title: 'Implications for introgression: has selection for fast growth altered the size threshold for precocious male maturation in domesticated Atlantic salmon?'
+          - doi: '10.1128/aac.48.10.3912-3917.2004'
+            title: 'Long depletion time of enrofloxacin in rainbow trout (Oncorhynchus mykiss)'
+          - doi: '10.1111/j.1365-2761.2012.01359.x'
+            title: 'Simultaneous detection of the IPN and ISA viruses in outbreaks of clinical disease and mortality in farmed Atlantic salmon, Salmo salar L., in Chile'
+          - doi: '10.1115/omae2017-61845'
+            title: 'Risk Management in Aquaculture: Integrating Sustainability Perspectives'
+          - doi: '10.1016/j.gloenvcha.2010.04.001'
+            title: 'The political ecology of Chilean salmon aquaculture, 1982–2010: A trajectory from economic development to global sustainability'
+          - doi: '10.3390/ani11071974'
+            title: 'Influence of Infectious Pancreatic Necrosis Virus and Yersinia ruckeri Co-Infection on a Non-Specific Immune System in Rainbow Trout (Oncorhynchus mykiss)'
+          - doi: '10.1016/j.aquaculture.2013.04.002'
+            title: 'Comparison of the fecundity rate of Caligus rogercresseyi infesting Atlantic salmon (Salmo salar L.) on farms in two regions of Chile'
+          - doi: '10.1016/j.aquaculture.2025.743137'
+            title: 'The efficacy of lumpfish in controlling salmon lice in fish farms'
+          - doi: '10.1016/j.aquaculture.2020.735980'
+            title: 'Effects of selenium-enriched prebiotic on the growth performance, innate immune response, oxidative enzyme activity and microbiome of rainbow trout (Oncorhynchus mykiss)'
+          - doi: '10.1016/b978-0-12-550755-4.50026-4'
+            title: 'Paramoebic Gill Infection and Associated Pathology of Atlantic Salmon, Salmo Salar, and Rainbow Trout, Salmo Gairdneri, in Tasmania'
+          - doi: '10.52419/issn2782-6252.2022.1.38'
+            title: 'Myxobacterioses of salmon and sturgeon fish Comments to the Order of the Ministry of Agriculture of the Russian Federation No. 644 dated 22.09.2021'
+          - doi: '10.1101/026583'
+            title: 'A Model For Sea Lice (Lepeophtheirus salmonis) Dynamics In A Seasonally Changing Environment'
+          - doi: '10.1093/femsec/fiac076'
+            title: 'Glyphosate-based herbicide exposure: effects on gill microbiota of rainbow trout (Oncorhynchus mykiss) and the aquatic bacterial ecosystem'
+          - doi: '10.3389/fvets.2018.00269'
+            title: 'The Use of Kernel Density Estimation With a Bio-Physical Model Provides a Method to Quantify Connectivity Among Salmon Farms: Spatial Planning and Management With Epidemiological Relevance'
+          - doi: '10.1111/j.1745-4514.2005.00015.x'
+            title: 'Physicochemical Properties of Muscle and Natural Actomyosin Extracted from Farmed Atlantic Salmon (Salmo Salar) Stored at 4c'
+          - doi: '10.1021/acs.est.8b00146'
+            title: 'Polybrominated Diphenyl Ether (PBDE) Accumulation in Farmed Salmon Evaluated Using a Dynamic Sea-Cage Production Model'
+          - doi: '10.3390/biology15020163'
+            title: 'Dietary Methionine Supplementation Improves Rainbow Trout (Oncorhynchus mykiss) Immune Responses Against Viral Haemorrhagic Septicaemia Virus (VHSV).'
+          - doi: '10.1101/2021.03.15.435234'
+            title: 'The salmon louse genome: copepod features and parasitic adaptations'
+          - doi: '10.1111/j.1749-7345.2010.00349.x'
+            title: 'Toward Improved Public Confidence in Farmed Fish Quality: A Canadian Perspective on the Consequences of Diet Selection'
+
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -32,8 +68,8 @@ jobs:
       - name: Retrieve and parse full text
         shell: python
         env:
-          DOI_INPUT: ${{ inputs.doi }}
-          TITLE_INPUT: ${{ inputs.title }}
+          DOI_INPUT: ${{ matrix.doi }}
+          TITLE_INPUT: ${{ matrix.title }}
           OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
           UNPAYWALL_EMAIL: ${{ secrets.UNPAYWALL_EMAIL }}
         run: |
@@ -97,6 +133,7 @@ jobs:
               audit['openalex_http']=r.status_code
               if r.ok:
                   w=r.json(); audit['openalex_id']=w.get('id'); audit['openalex_title']=w.get('display_name'); audit['openalex_has_content']=w.get('has_content',{})
+                  if not expected_title: expected_title=w.get('display_name') or ''
                   key=os.environ.get('OPENALEX_API_KEY',''); wid=(w.get('id') or '').rstrip('/').split('/')[-1]
                   if key and wid:
                       if w.get('has_content',{}).get('grobid_xml'):
@@ -112,6 +149,8 @@ jobs:
                       u=(loc.get('pdf_url') or loc.get('landing_page_url') or '').strip()
                       if u.startswith('http'): candidates.append(('OpenAlex OA location',u,None,'url'))
           except Exception as e: audit['openalex_error']=repr(e)
+
+          audit['expected_title']=expected_title
 
           # 2. Europe PMC: exact DOI -> PMCID -> canonical full-text XML.
           try:
@@ -158,12 +197,12 @@ jobs:
                       title,abstract,body,refs,xml_dois=parse_tei(data)
                       text='\n\n'.join(x for x in (title,abstract,body,refs) if x)
                       validation={'text_chars':len(text),'reference_count':len(re.findall(r'<biblStruct|<ref\b',data.decode('utf-8','ignore'))),'observed_dois':xml_dois,'doi_match':doi in xml_dois,'title_score':title_score(expected_title,title) if expected_title else None}
-                      complete=len(body)>=5000 and validation['reference_count']>=3 and (validation['doi_match'] or not expected_title or validation['title_score']>=0.70)
+                      complete=len(body)>=5000 and validation['reference_count']>=3 and (validation['doi_match'] or (validation['title_score'] or 0)>=0.70)
                       attempt.update({'representation':'TEI/XML','title':title,'validation':validation,'complete':complete})
                       if complete:
                           (OUT/'fulltext.txt').write_text(text,encoding='utf-8'); (OUT/'fulltext.xml').write_bytes(data)
                   else:
-                      text,pages=parse_pdf(data); validation=validate_text(text); complete=len(text)>=5000 and validation['reference_section'] and (validation['doi_match'] or not expected_title or (validation['title_score'] or 0)>=0.25); attempt.update({'representation':'PDF','pages':pages,'validation':validation,'complete':complete})
+                      text,pages=parse_pdf(data); validation=validate_text(text); complete=len(text)>=5000 and validation['reference_section'] and (validation['doi_match'] or (validation['title_score'] or 0)>=0.25); attempt.update({'representation':'PDF','pages':pages,'validation':validation,'complete':complete})
                       if complete:
                           (OUT/'fulltext.txt').write_text(text,encoding='utf-8'); (OUT/'fulltext.pdf').write_bytes(data)
                   audit['attempts'].append(attempt)
@@ -182,6 +221,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fulltext-${{ inputs.doi }}-${{ github.run_id }}
+          name: fulltext-${{ matrix.doi }}-${{ github.run_id }}
           path: fulltext_output/
           if-no-files-found: warn
