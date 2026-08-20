@@ -157,6 +157,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fulltext-${{ matrix.doi }}-${{ github.run_id }}
+          name: fulltext-${{ matrix.doi.replace('/', '_') }}-${{ github.run_id }}
           path: fulltext_output/
           if-no-files-found: warn
