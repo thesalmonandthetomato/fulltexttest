@@ -1,0 +1,162 @@
+name: DOI full-text retrieval — OpenAlex + Europe PMC + Unpaywall v2
+on:
+  workflow_dispatch:
+jobs:
+  retrieve:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        doi:
+          - 10.1016/j.chemosphere.2008.01.030
+          - 10.1186/s12862-018-1294-y
+          - 10.1128/aac.48.10.3912-3917.2004
+          - 10.1111/j.1365-2761.2012.01359.x
+          - 10.1115/omae2017-61845
+          - 10.1016/j.gloenvcha.2010.04.001
+          - 10.3390/ani11071974
+          - 10.1016/j.aquaculture.2013.04.002
+          - 10.1016/j.aquaculture.2025.743137
+          - 10.1016/j.aquaculture.2020.735980
+          - 10.1016/b978-0-12-550755-4.50026-4
+          - 10.52419/issn2782-6252.2022.1.38
+          - 10.1101/026583
+          - 10.1093/femsec/fiac076
+          - 10.3389/fvets.2018.00269
+          - 10.1111/j.1745-4514.2005.00015.x
+          - 10.1021/acs.est.8b00146
+          - 10.3390/biology15020163
+          - 10.1101/2021.03.15.435234
+          - 10.1111/j.1749-7345.2010.00349.x
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check --no-input requests lxml pypdf beautifulsoup4
+      - name: Retrieve full text
+        shell: python
+        env:
+          DOI_INPUT: ${{ matrix.doi }}
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          UNPAYWALL_EMAIL: ${{ secrets.UNPAYWALL_EMAIL }}
+        run: |
+          import gzip,json,os,re,time
+          from pathlib import Path
+          from urllib.parse import urljoin
+          import requests
+          from lxml import etree
+          from pypdf import PdfReader
+          from bs4 import BeautifulSoup
+          out=Path('fulltext_output');out.mkdir(exist_ok=True)
+          s=requests.Session();s.headers['User-Agent']='fulltexttest/doi-fulltext-retrieval/2.0'
+          doi=re.sub(r'^(?:https?://doi.org/|doi:)','',os.environ['DOI_INPUT'].strip(),flags=re.I).rstrip(' .;,').lower()
+          audit={'doi':doi,'verified_complete':False,'selected_source':None,'source_url':None,'openalex':{},'europepmc':{},'unpaywall':{},'attempts':[]}
+          def get(u,**kw):
+            for i in range(8):
+              try:r=s.get(u,timeout=60,allow_redirects=True,**kw)
+              except Exception:
+                if i==7:raise
+                time.sleep(min(60,2**i));continue
+              if r.status_code not in (429,500,502,503,504) or i==7:return r
+              try:d=min(60,float(r.headers.get('Retry-After',''))) if r.headers.get('Retry-After') else min(60,2**i)
+              except ValueError:d=min(60,2**i)
+              time.sleep(d)
+          def pdf(data):
+            p=out/'x.pdf';p.write_bytes(data)
+            try:r=PdfReader(str(p));return '\n\n'.join(x.extract_text() or '' for x in r.pages),len(r.pages)
+            finally:p.unlink(missing_ok=True)
+          def xml(data):
+            root=etree.fromstring(data)
+            def t(q):return '\n'.join(' '.join(''.join(n.itertext()).split()) for n in root.xpath(q)).strip()
+            return t('//*[local-name()="titleStmt"]//*[local-name()="title"] | //*[local-name()="article-title"]'),t('//*[local-name()="abstract"]'),t('//*[local-name()="body"]'),t('//*[local-name()="listBibl"]')
+          def links(base,data):
+            soup=BeautifulSoup(data,'html.parser');r=[]
+            for a in soup.find_all(['a','link'],href=True):
+              u=urljoin(base,a.get('href'))
+              if any(x in u.lower() for x in ('pdf','bitstream','download','document','content','file')):r.append(u)
+            for m in soup.find_all('meta'):
+              v=m.get('content','')
+              if isinstance(v,str) and ('pdf' in v.lower() or 'download' in v.lower()):r.append(urljoin(base,v))
+            return list(dict.fromkeys(r))
+          def take(source,u,data,ct):
+            a={'source':source,'url':u,'final_url':u,'http':200,'content_type':ct}
+            try:
+              if 'gzip' in ct.lower() or data[:2]==b'\x1f\x8b':data=gzip.decompress(data);ct='application/xml';a['decompressed']=True
+              if data.startswith(b'%PDF') or 'pdf' in ct.lower():
+                text,pages=pdf(data);ok=len(text)>=3000;a.update(representation='PDF',pages=pages,text_chars=len(text),complete=ok)
+                if ok:(out/'fulltext.pdf').write_bytes(data)
+              elif 'xml' in ct.lower() or data.lstrip().startswith(b'<?xml'):
+                title,abstract,body,refs=xml(data);text='\n\n'.join(x for x in (title,abstract,body,refs) if x);ok=len(body)>=3000;a.update(representation='XML',title=title,text_chars=len(text),complete=ok)
+                if ok:(out/'fulltext.xml').write_bytes(data)
+              else:
+                soup=BeautifulSoup(data,'html.parser')
+                for x in soup(['script','style','nav','header','footer','aside']):x.decompose()
+                text=' '.join(soup.get_text(' ',strip=True).split());a['representation']='HTML';a['text_chars']=len(text);ls=links(u,data);a['discovered_links']=ls[:30];ok=len(text)>=5000
+                if ok:(out/'fulltext.txt').write_text(text,encoding='utf-8')
+                if not ok:
+                  for x in ls:
+                    if fetch('Resolved document',x):ok=True;break
+              audit['attempts'].append(a)
+              if ok and not audit['verified_complete']:
+                if not (out/'fulltext.txt').exists(): (out/'fulltext.txt').write_text(text,encoding='utf-8')
+                audit.update(verified_complete=True,selected_source=source,source_url=u);return True
+            except Exception as e:a.update(result='parse_error',error=repr(e));audit['attempts'].append(a)
+            return False
+          def fetch(label,u):
+            try:r=get(u)
+            except Exception as e:audit['attempts'].append({'source':label,'url':u,'result':'request_error','error':repr(e)});return False
+            if r.status_code>=400 or not r.content:audit['attempts'].append({'source':label,'url':u,'final_url':r.url,'http':r.status_code,'result':'download_failed'});return False
+            return take(label,r.url,r.content,r.headers.get('content-type',''))
+          try:
+            r=get('https://api.openalex.org/works/https://doi.org/'+requests.utils.quote(doi));audit['openalex']['http']=r.status_code
+            if r.ok:
+              w=r.json();audit['openalex'].update(id=w.get('id'),doi=w.get('doi'),title=w.get('display_name'),type=w.get('type'),is_oa=w.get('open_access',{}).get('is_oa'),has_content=w.get('has_content',{}),best_oa_location=w.get('best_oa_location'),locations=w.get('locations',[]))
+              key=os.environ.get('OPENALEX_API_KEY');wid=(w.get('id') or '').rstrip('/').split('/')[-1]
+              if key and wid and w.get('has_content',{}).get('grobid_xml'):
+                x=get(f'https://content.openalex.org/works/{wid}.grobid-xml',params={'api_key':key});audit['openalex']['tei_http']=x.status_code
+                if x.ok:take('OpenAlex TEI',x.url,x.content,x.headers.get('content-type','application/xml'))
+              if not audit['verified_complete'] and key and wid and w.get('has_content',{}).get('pdf'):
+                x=get(f'https://content.openalex.org/works/{wid}.pdf',params={'api_key':key});audit['openalex']['pdf_http']=x.status_code
+                if x.ok and x.content.startswith(b'%PDF'):take('OpenAlex PDF',x.url,x.content,'application/pdf')
+              if not audit['verified_complete']:
+                locs=([w.get('best_oa_location')] if w.get('best_oa_location') else [])+(w.get('locations') or []);seen=set()
+                for loc in locs:
+                  for k in ('pdf_url','landing_page_url'):
+                    u=loc.get(k) if isinstance(loc,dict) else None
+                    if isinstance(u,str) and u.startswith('http') and u not in seen:
+                      seen.add(u)
+                      if fetch('OpenAlex OA location',u):break
+                  if audit['verified_complete']:break
+          except Exception as e:audit['openalex']['error']=repr(e)
+          if not audit['verified_complete']:
+            try:
+              r=get('https://www.ebi.ac.uk/europepmc/webservices/rest/search',params={'query':f'DOI:"{doi}"','resultType':'core','format':'json'});audit['europepmc']['http']=r.status_code
+              if r.ok:
+                hits=r.json().get('resultList',{}).get('result',[]);exact=[h for h in hits if (h.get('doi') or '').strip().lower()==doi];audit['europepmc']['doi_match']=bool(exact)
+                if exact and exact[0].get('pmcid'):
+                  audit['europepmc']['pmcid']=exact[0]['pmcid'];u='https://www.ebi.ac.uk/europepmc/webservices/rest/'+exact[0]['pmcid']+'/fullTextXML';x=get(u);audit['europepmc']['fulltext_http']=x.status_code
+                  if x.ok:take('Europe PMC XML',x.url,x.content,x.headers.get('content-type','application/xml'))
+            except Exception as e:audit['europepmc']['error']=repr(e)
+          if not audit['verified_complete']:
+            try:
+              r=get('https://api.unpaywall.org/v2/'+requests.utils.quote(doi),params={'email':os.environ.get('UNPAYWALL_EMAIL','fulltexttest@example.org')});audit['unpaywall']['http']=r.status_code
+              if r.ok:
+                d=r.json();locs=([d['best_oa_location']] if d.get('best_oa_location') else [])+(d.get('oa_locations') or []);audit['unpaywall']['location_count']=len(locs);seen=set()
+                for loc in locs:
+                  for field in ('url_for_pdf','url_for_landing_page'):
+                    u=(loc.get(field) or '').strip()
+                    if u.startswith('http') and u not in seen:
+                      seen.add(u)
+                      if fetch('Unpaywall PDF' if field=='url_for_pdf' else 'Unpaywall landing page',u):break
+                  if audit['verified_complete']:break
+            except Exception as e:audit['unpaywall']['error']=repr(e)
+          (out/'metadata.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
+          if not audit['verified_complete']:raise SystemExit('No usable parsed full text retrieved')
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fulltext-${{ matrix.doi }}-${{ github.run_id }}
+          path: fulltext_output/
+          if-no-files-found: warn
