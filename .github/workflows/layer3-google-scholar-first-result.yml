@@ -1,0 +1,106 @@
+name: Layer 3 Google Scholar first-result full-text links
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: layer3-google-scholar-first-result
+  cancel-in-progress: false
+
+jobs:
+  scholar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check --no-input requests beautifulsoup4
+
+      - name: Search Google Scholar first result for each DOI
+        shell: python
+        run: |
+          import csv, json, re, time
+          from pathlib import Path
+          from urllib.parse import quote_plus, urljoin
+          import requests
+          from bs4 import BeautifulSoup
+
+          OUT = Path('layer3_google_scholar_results')
+          OUT.mkdir(exist_ok=True)
+          s = requests.Session()
+          s.headers.update({
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+              'Accept-Language': 'en-GB,en;q=0.9'
+          })
+
+          records = [
+            ('01','10.1021/pr049840t'),
+            ('03','10.1201/9781003077770-78'),
+            ('08','10.14288/1.0058967'),
+            ('10','10.1111/jfb.12710'),
+            ('11','10.15586/ijfs.v38i2.3600'),
+            ('12','10.6084/m9.figshare.31147177.v1'),
+            ('13','10.56093/ehyqc013'),
+            ('14','10.1007/s10750-026-06204-0'),
+          ]
+
+          def norm_doi(x):
+              return re.sub(r'^doi:\s*|^https?://doi.org/', '', (x or '').strip().lower()).rstrip(' .;,')
+
+          audit=[]
+          for n, doi in records:
+              row={'record':n,'doi':doi,'search_url':f'https://scholar.google.com/scholar?q={quote_plus(chr(34)+doi+chr(34))}', 'http':None,'first_result_found':False,'pdf_links':[],'html_links':[]}
+              try:
+                  r=s.get(row['search_url'],timeout=60)
+                  row['http']=r.status_code
+                  (OUT/f'{n}_search.html').write_text(r.text,encoding='utf-8')
+                  soup=BeautifulSoup(r.text,'html.parser')
+                  result=soup.select_one('div.gs_ri')
+                  if result:
+                      row['first_result_found']=True
+                      row['first_result_title']=(result.select_one('h3.gs_rt').get_text(' ',strip=True) if result.select_one('h3.gs_rt') else '')
+                      row['first_result_url']=(result.select_one('h3.gs_rt a')['href'] if result.select_one('h3.gs_rt a') else '')
+                      row['first_result_text']=result.get_text(' ',strip=True)
+                      for a in result.select('a'):
+                          txt=a.get_text(' ',strip=True).lower()
+                          href=a.get('href','')
+                          if not href: continue
+                          # Scholar labels these access links as [PDF] / [HTML].
+                          if txt == '[pdf]' or txt.startswith('[pdf]'):
+                              row['pdf_links'].append({'label':a.get_text(' ',strip=True),'url':urljoin('https://scholar.google.com',href)})
+                          elif txt == '[html]' or txt.startswith('[html]'):
+                              row['html_links'].append({'label':a.get_text(' ',strip=True),'url':urljoin('https://scholar.google.com',href)})
+                  else:
+                      row['page_note']='No gs_ri first result found; inspect saved HTML.'
+              except Exception as e:
+                  row['error']=repr(e)
+              (OUT/f'{n}_result.json').write_text(json.dumps(row,indent=2,ensure_ascii=False),encoding='utf-8')
+              audit.append(row)
+              print(f"[{n}] {doi}: HTTP={row['http']} first={row['first_result_found']} PDF={len(row['pdf_links'])} HTML={len(row['html_links'])}")
+              time.sleep(3)
+
+          fields=['record','doi','search_url','http','first_result_found','first_result_title','first_result_url','pdf_count','html_count','pdf_links_json','html_links_json','error','page_note']
+          with (OUT/'audit.csv').open('w',newline='',encoding='utf-8') as f:
+              w=csv.DictWriter(f,fieldnames=fields)
+              w.writeheader()
+              for x in audit:
+                  w.writerow({
+                    'record':x.get('record'),'doi':x.get('doi'),'search_url':x.get('search_url'),'http':x.get('http'),
+                    'first_result_found':x.get('first_result_found'),'first_result_title':x.get('first_result_title',''),
+                    'first_result_url':x.get('first_result_url',''),'pdf_count':len(x.get('pdf_links',[])),
+                    'html_count':len(x.get('html_links',[])),'pdf_links_json':json.dumps(x.get('pdf_links',[])),
+                    'html_links_json':json.dumps(x.get('html_links',[])),'error':x.get('error',''),'page_note':x.get('page_note','')
+                  })
+          (OUT/'audit.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
+          print('Completed Google Scholar first-result audit. No full text was downloaded and no match/completeness judgement was made.')
+
+      - name: Upload Scholar audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: layer3-google-scholar-results-${{ github.run_id }}
+          path: layer3_google_scholar_results/
+          if-no-files-found: warn
