@@ -77,18 +77,20 @@ jobs:
                               if href and label in ('[PDF]','[HTML]'):
                                   row['access_links'].append({'label':label,'url':urljoin('https://scholar.google.com/',href)})
 
-                      # Try PDF first, then HTML. Stop after the first successfully retrieved document.
-                      for rank, link in enumerate(row['access_links'],1):
-                          att={'rank':rank,'label':link['label'],'scholar_url':link['url']}
+                      # Use ONLY the first [PDF] or [HTML] access link exposed for the first Scholar result.
+                      # Do not try subsequent access links if this first endpoint fails.
+                      first_link = row['access_links'][0] if row['access_links'] else None
+                      if first_link:
+                          att={'rank':1,'label':first_link['label'],'scholar_url':first_link['url']}
                           try:
-                              rr=s.get(link['url'],timeout=90,allow_redirects=True,stream=True)
+                              rr=s.get(first_link['url'],timeout=90,allow_redirects=True)
                               att['http']=rr.status_code
                               att['final_url']=rr.url
                               att['content_type']=rr.headers.get('content-type','')
                               content=rr.content
                               att['bytes']=len(content)
                               ct=att['content_type'].lower()
-                              if rr.ok and (link['label']=='[PDF]' or 'application/pdf' in ct or content[:4]==b'%PDF'):
+                              if rr.ok and (first_link['label']=='[PDF]' or 'application/pdf' in ct or content[:4]==b'%PDF'):
                                   fname=f'{n}_scholar.pdf'
                                   path=DOCS/fname
                                   path.write_bytes(content)
@@ -105,10 +107,7 @@ jobs:
                                   att['text_chars']=len(text)
                                   att['text_file']=str(txtfile)
                                   att['retrieved_fulltext']=len(text.strip())>0
-                                  row['retrievals'].append(att)
-                                  if att['retrieved_fulltext']:
-                                      break
-                              elif rr.ok and (link['label']=='[HTML]' or 'text/html' in ct):
+                              elif rr.ok and (first_link['label']=='[HTML]' or 'text/html' in ct):
                                   html=content.decode(rr.encoding or 'utf-8',errors='replace')
                                   (DOCS/f'{n}_scholar.html').write_text(html,encoding='utf-8')
                                   hs=BeautifulSoup(html,'html.parser')
@@ -120,16 +119,12 @@ jobs:
                                   att['text_chars']=len(text)
                                   att['text_file']=str(txtfile)
                                   att['retrieved_fulltext']=len(text.strip())>0
-                                  row['retrievals'].append(att)
-                                  if att['retrieved_fulltext']:
-                                      break
                               else:
                                   att['retrieved_fulltext']=False
-                                  row['retrievals'].append(att)
                           except Exception as e:
                               att['error']=repr(e)
                               att['retrieved_fulltext']=False
-                              row['retrievals'].append(att)
+                          row['retrievals'].append(att)
                   else:
                       row['page_note']='No first Scholar result found.'
               except Exception as e:
@@ -137,7 +132,7 @@ jobs:
               (OUT/f'{n}_audit.json').write_text(json.dumps(row,indent=2,ensure_ascii=False),encoding='utf-8')
               audit.append(row)
               successful=sum(1 for x in row['retrievals'] if x.get('retrieved_fulltext'))
-              print(f"[{n}] {doi}: Scholar={row['scholar_http']} first={row['first_result_found']} access={len(row['access_links'])} successful_fulltext={successful}")
+              print(f"[{n}] {doi}: Scholar={row['scholar_http']} first={row['first_result_found']} access={len(row['access_links'])} first_link_retrieved={successful}")
               time.sleep(3)
 
           fields=['record','doi','scholar_http','first_result_found','first_result_title','first_result_url','access_links_json','retrievals_json','error','page_note']
@@ -152,7 +147,7 @@ jobs:
                     'retrievals_json':json.dumps(x.get('retrievals',[]),ensure_ascii=False),'error':x.get('error',''),'page_note':x.get('page_note','')
                   })
           (OUT/'audit.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
-          print('Completed Layer 4. Success means an actual PDF or HTML document was retrieved and non-empty text was extracted. No identity/completeness verification was performed.')
+          print('Completed Layer 4. Success means the FIRST [PDF] or [HTML] endpoint for each first Scholar result was retrieved and non-empty text was extracted. No identity/completeness verification was performed.')
 
       - name: Upload retrieved full texts and audit
         if: always()
