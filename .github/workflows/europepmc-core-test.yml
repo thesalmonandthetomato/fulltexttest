@@ -19,6 +19,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check --no-input requests
+
+      - name: Verify dependencies
+        run: python -c "import requests; print('requests', requests.__version__)"
+
       - name: Retrieve raw API results for all 15 records
         shell: python
         env:
@@ -71,7 +77,6 @@ jobs:
               stem = f'{n:02d}'
               row = {'n': n, 'doi': doi, 'database_title': title}
 
-              # EUROPE PMC: save the complete search JSON exactly as returned.
               if doi:
                   try:
                       q = requests.utils.quote(f'DOI:"{doi}"')
@@ -79,7 +84,6 @@ jobs:
                       r = request(url)
                       row['epmc_search_http'] = r.status_code
                       (OUT / f'{stem}_europepmc_search.json').write_text(r.text, encoding='utf-8')
-
                       data = r.json() if r.ok else {}
                       hits = data.get('resultList', {}).get('result', [])
                       row['epmc_result_count'] = len(hits)
@@ -98,25 +102,16 @@ jobs:
                   except Exception as e:
                       row['epmc_error'] = repr(e)
               else:
-                  row['epmc_search_http'] = ''
-                  row['epmc_result_count'] = ''
-                  row['epmc_exact_doi_results'] = ''
                   row['epmc_note'] = 'No DOI supplied; no Europe PMC DOI query performed.'
 
-              # CORE: save the complete search JSON exactly as returned.
               try:
                   key = os.environ.get('CORE_API_KEY', '')
                   if not key:
                       row['core_error'] = 'CORE_API_KEY missing'
                   else:
                       query = f'doi:"{doi}"' if doi else f'title:"{title}"'
-                      r = request(
-                          'https://api.core.ac.uk/v3/search/works',
-                          params={'q': query, 'limit': 10},
-                          headers={'Authorization': f'Bearer {key}'}
-                      )
+                      r = request('https://api.core.ac.uk/v3/search/works', params={'q': query, 'limit': 10}, headers={'Authorization': f'Bearer {key}'})
                       row['core_search_http'] = r.status_code
-                      # Raw response is saved; the API key is not part of the response.
                       (OUT / f'{stem}_core_search.json').write_text(r.text, encoding='utf-8')
                       data = r.json() if r.ok else {}
                       hits = data.get('results', []) or data.get('data', [])
@@ -135,16 +130,11 @@ jobs:
               print(f'[{n}/15] {doi or "NO DOI"}')
               time.sleep(1)
 
-          fields = [
-              'n','doi','database_title',
-              'epmc_search_http','epmc_result_count','epmc_exact_doi_results','epmc_pmcid','epmc_api_title','epmc_fulltext_http','epmc_fulltext_file','epmc_error','epmc_note',
-              'core_search_http','core_result_count','core_exact_doi_results','core_id','core_api_doi','core_api_title','core_error'
-          ]
+          fields = ['n','doi','database_title','epmc_search_http','epmc_result_count','epmc_exact_doi_results','epmc_pmcid','epmc_api_title','epmc_fulltext_http','epmc_fulltext_file','epmc_error','epmc_note','core_search_http','core_result_count','core_exact_doi_results','core_id','core_api_doi','core_api_title','core_error']
           with (OUT / 'audit.csv').open('w', newline='', encoding='utf-8') as f:
               w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
               w.writeheader(); w.writerows(audit)
           (OUT / 'audit.json').write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding='utf-8')
-
           print('\nCompleted raw retrieval for all 15 records.')
           print('No automated full-text/identity judgement has been made.')
 
