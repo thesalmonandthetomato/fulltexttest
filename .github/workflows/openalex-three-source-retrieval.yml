@@ -41,10 +41,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check --no-input requests lxml pypdf
-
       - name: Retrieve and parse full text
         shell: python
         env:
@@ -58,55 +56,36 @@ jobs:
           import requests
           from lxml import etree
           from pypdf import PdfReader
-
           OUT=Path('fulltext_output'); OUT.mkdir(exist_ok=True)
           s=requests.Session(); s.headers.update({'User-Agent':'fulltexttest/doi-fulltext-retrieval/1.2','Accept-Language':'en-GB,en;q=0.9'})
-
           def norm_doi(x):
               x=(x or '').strip().lower(); x=re.sub(r'^https?://doi.org/','',x); x=re.sub(r'^doi:\s*','',x); return x.rstrip(' .;,')
           doi=norm_doi(os.environ['DOI_INPUT']); expected_title=os.environ.get('TITLE_INPUT','').strip()
           if not re.match(r'^10\.\d{4,9}/\S+$',doi): raise SystemExit(f'Invalid DOI: {doi}')
-
           def get(url,**kw):
               for i in range(5):
                   r=s.get(url,timeout=60,allow_redirects=True,**kw)
                   if r.status_code not in (429,500,502,503,504) or i==4: return r
                   time.sleep(2**i)
-
           def parse_pdf(data):
               p=OUT/'source.pdf'; p.write_bytes(data)
               try:
-                  r=PdfReader(str(p)); pages=[x.extract_text() or '' for x in r.pages]
-                  return '\n\n'.join(pages),len(pages)
+                  r=PdfReader(str(p)); pages=[x.extract_text() or '' for x in r.pages]; return '\n\n'.join(pages),len(pages)
               finally: p.unlink(missing_ok=True)
-
           def parse_xml(data):
               root=etree.fromstring(data)
               def txt(xpath): return '\n'.join(' '.join(''.join(n.itertext()).split()) for n in root.xpath(xpath)).strip()
-              title=txt('//*[local-name()="titleStmt"]//*[local-name()="title"] | //*[local-name()="article-title"]')
-              abstract=txt('//*[local-name()="abstract"]'); body=txt('//*[local-name()="body"]'); refs=txt('//*[local-name()="listBibl"]')
-              return title,abstract,body,refs
-
+              title=txt('//*[local-name()="titleStmt"]//*[local-name()="title"] | //*[local-name()="article-title"]'); abstract=txt('//*[local-name()="abstract"]'); body=txt('//*[local-name()="body"]'); refs=txt('//*[local-name()="listBibl"]'); return title,abstract,body,refs
           def usable_pdf(data):
-              try:
-                  text,pages=parse_pdf(data)
-                  return len(text)>=3000 and pages>=1,text,pages
+              try: text,pages=parse_pdf(data); return len(text)>=3000 and pages>=1,text,pages
               except Exception: return False,'',0
-
           def usable_xml(data):
-              try:
-                  title,abstract,body,refs=parse_xml(data)
-                  text='\n\n'.join(x for x in (title,abstract,body,refs) if x)
-                  return len(body)>=3000,text,title
+              try: title,abstract,body,refs=parse_xml(data); text='\n\n'.join(x for x in (title,abstract,body,refs) if x); return len(body)>=3000,text,title
               except Exception: return False,'',''
-
           audit={'doi':doi,'input_title':expected_title,'verified_complete':False,'selected_source':None,'source_url':None,'openalex':{},'europepmc':{},'unpaywall':{},'attempts':[]}
           candidates=[]
-
-          # OpenAlex DOI -> Work resolution. Its metadata is retained as provenance; no PDF identity gate is applied.
           try:
-              r=get(f'https://api.openalex.org/works/https://doi.org/{requests.utils.quote(doi)}')
-              audit['openalex']['http']=r.status_code
+              r=get(f'https://api.openalex.org/works/https://doi.org/{requests.utils.quote(doi)}'); audit['openalex']['http']=r.status_code
               if r.ok:
                   w=r.json(); audit['openalex'].update({'id':w.get('id'),'doi':w.get('doi'),'title':w.get('display_name'),'publication_year':w.get('publication_year'),'type':w.get('type'),'is_oa':w.get('open_access',{}).get('is_oa'),'has_content':w.get('has_content',{}),'best_oa_location':w.get('best_oa_location')})
                   key=os.environ.get('OPENALEX_API_KEY',''); wid=(w.get('id') or '').rstrip('/').split('/')[-1]
@@ -122,19 +101,14 @@ jobs:
                           u=(loc.get('pdf_url') or loc.get('landing_page_url') or '').strip()
                           if u.startswith('http'): candidates.append(('OpenAlex OA location',u,None,'url'))
           except Exception as e: audit['openalex']['error']=repr(e)
-
-          # Europe PMC is a fallback only; a usable OpenAlex document will stop the cascade.
           try:
               q=requests.utils.quote(f'DOI:"{doi}"'); r=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/search?query={q}&resultType=core&format=json'); audit['europepmc']['http']=r.status_code
               if r.ok:
-                  hits=r.json().get('resultList',{}).get('result',[]); exact=[h for h in hits if norm_doi(h.get('doi'))==doi]
-                  audit['europepmc']['matched']=bool(exact); audit['europepmc']['pmcid']=exact[0].get('pmcid') if exact else None
+                  hits=r.json().get('resultList',{}).get('result',[]); exact=[h for h in hits if norm_doi(h.get('doi'))==doi]; audit['europepmc']['matched']=bool(exact); audit['europepmc']['pmcid']=exact[0].get('pmcid') if exact else None
                   if exact and exact[0].get('pmcid'):
-                      pmcid=exact[0]['pmcid']; rr=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML'); audit['europepmc']['fulltext_http']=rr.status_code
+                      rr=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/{exact[0]["pmcid"]}/fullTextXML'); audit['europepmc']['fulltext_http']=rr.status_code
                       if rr.ok and rr.content: candidates.append(('Europe PMC XML',rr.url,rr.content,'xml'))
           except Exception as e: audit['europepmc']['error']=repr(e)
-
-          # Unpaywall supplies ranked OA locations as the final fallback.
           try:
               email=os.environ.get('UNPAYWALL_EMAIL') or 'fulltexttest@example.org'; r=get(f'https://api.unpaywall.org/v2/{requests.utils.quote(doi)}',params={'email':email}); audit['unpaywall']['http']=r.status_code
               if r.ok:
@@ -147,8 +121,6 @@ jobs:
                           if u.startswith('http') and u not in seen: seen.add(u); urls.append(u); candidates.append(('Unpaywall',u,None,'url'))
                   audit['unpaywall']['locations']=urls
           except Exception as e: audit['unpaywall']['error']=repr(e)
-
-          # A source is accepted when it returns parseable, substantive full text. No DOI/title validation gate.
           seen=set()
           for source,url,data,kind in candidates:
               if url in seen: continue
@@ -157,29 +129,21 @@ jobs:
                   rr=get(url); data=rr.content; final_url=rr.url; status=rr.status_code; ctype=rr.headers.get('content-type','')
               else: final_url=url; status=200; ctype='application/'+kind
               attempt={'source':source,'url':url,'final_url':final_url,'http':status,'content_type':ctype}
-              if status>=400 or not data:
-                  attempt['result']='download_failed'; audit['attempts'].append(attempt); continue
+              if status>=400 or not data: attempt['result']='download_failed'; audit['attempts'].append(attempt); continue
               try:
                   is_xml=kind=='xml' or 'xml' in ctype.lower() or data.lstrip().startswith(b'<?xml') or b'<article' in data[:1000]
                   if is_xml:
                       ok,text,title=usable_xml(data); attempt.update({'representation':'XML','title':title,'text_chars':len(text),'complete':ok})
-                      if ok:
-                          (OUT/'fulltext.txt').write_text(text,encoding='utf-8'); (OUT/'fulltext.xml').write_bytes(data)
+                      if ok: (OUT/'fulltext.txt').write_text(text,encoding='utf-8'); (OUT/'fulltext.xml').write_bytes(data)
                   else:
                       ok,text,pages=usable_pdf(data); attempt.update({'representation':'PDF','pages':pages,'text_chars':len(text),'complete':ok})
-                      if ok:
-                          (OUT/'fulltext.txt').write_text(text,encoding='utf-8'); (OUT/'fulltext.pdf').write_bytes(data)
+                      if ok: (OUT/'fulltext.txt').write_text(text,encoding='utf-8'); (OUT/'fulltext.pdf').write_bytes(data)
                   audit['attempts'].append(attempt)
-                  if ok:
-                      audit.update({'verified_complete':True,'selected_source':source,'source_url':final_url}); break
-              except Exception as e:
-                  attempt.update({'result':'parse_error','error':repr(e)}); audit['attempts'].append(attempt)
-
+                  if ok: audit.update({'verified_complete':True,'selected_source':source,'source_url':final_url}); break
+              except Exception as e: attempt.update({'result':'parse_error','error':repr(e)}); audit['attempts'].append(attempt)
           (OUT/'metadata.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
-          if not audit['verified_complete']:
-              print(json.dumps(audit,indent=2)); raise SystemExit('No usable parsed full text retrieved')
+          if not audit['verified_complete']: print(json.dumps(audit,indent=2)); raise SystemExit('No usable parsed full text retrieved')
           print(json.dumps(audit,indent=2))
-
       - name: Upload parsed full text and provenance
         if: always()
         uses: actions/upload-artifact@v4
@@ -187,3 +151,32 @@ jobs:
           name: fulltext-${{ matrix.artifact_id }}-${{ github.run_id }}
           path: fulltext_output/
           if-no-files-found: warn
+
+  summarize:
+    if: always()
+    needs: retrieve
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download all per-DOI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fulltext-*-${{ github.run_id }}
+          path: collected
+          merge-multiple: false
+      - name: Build consolidated results
+        shell: python
+        run: |
+          import csv,json,glob
+          rows=[]; details=[]
+          for p in glob.glob('collected/**/metadata.json',recursive=True):
+              d=json.load(open(p,encoding='utf-8')); rows.append({'doi':d.get('doi'),'verified_complete':d.get('verified_complete'),'selected_source':d.get('selected_source'),'openalex_http':d.get('openalex',{}).get('http'),'openalex_pdf_http':d.get('openalex',{}).get('pdf_http'),'europepmc_http':d.get('europepmc',{}).get('http'),'europepmc_matched':d.get('europepmc',{}).get('matched'),'europepmc_fulltext_http':d.get('europepmc',{}).get('fulltext_http'),'unpaywall_http':d.get('unpaywall',{}).get('http'),'unpaywall_locations':len(d.get('unpaywall',{}).get('locations',[])),'attempt_count':len(d.get('attempts',[]))}); details.append(d)
+          rows.sort(key=lambda x:x['doi'] or '')
+          with open('batch-results.csv','w',newline='',encoding='utf-8') as f: w=csv.DictWriter(f,fieldnames=rows[0].keys() if rows else ['doi']); w.writeheader(); w.writerows(rows)
+          json.dump(details,open('batch-results.json','w',encoding='utf-8'),indent=2,ensure_ascii=False)
+      - name: Upload consolidated batch results
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-results-${{ github.run_id }}
+          path: |
+            batch-results.csv
+            batch-results.json
