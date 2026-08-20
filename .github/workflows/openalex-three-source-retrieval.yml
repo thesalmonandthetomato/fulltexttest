@@ -1,0 +1,253 @@
+name: OpenAlex + three-source DOI full-text retrieval
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: openalex-three-source-retrieval
+  cancel-in-progress: false
+
+env:
+  OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+  CORE_API_KEY: ${{ secrets.CORE_API_KEY }}
+  UNPAYWALL_EMAIL: ${{ secrets.UNPAYWALL_EMAIL }}
+
+jobs:
+  retrieve:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check --no-input requests lxml pypdf
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+
+      - name: Run OpenAlex + Europe PMC + Unpaywall retrieval
+        shell: python
+        env:
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          UNPAYWALL_EMAIL: ${{ secrets.UNPAYWALL_EMAIL }}
+        run: |
+          import csv, json, os, re, time
+          from pathlib import Path
+          import requests
+          from lxml import etree
+          from pypdf import PdfReader
+
+          OUT = Path('openalex_three_source_results')
+          DOCS = OUT / 'documents'; DOCS.mkdir(parents=True, exist_ok=True)
+          AUDIT = OUT / 'audit'; AUDIT.mkdir(parents=True, exist_ok=True)
+          session = requests.Session()
+          session.headers.update({'User-Agent': 'fulltexttest/openalex-three-source/1.0', 'Accept-Language':'en-GB,en;q=0.9'})
+
+          RECORDS = [
+            ('10.1021/pr049840t', 'Application of isotope coded affinity tag (ICAT) analysis for the identification of differentially expressed proteins following infection of atlantic salmon (Salmo salar) with infectious hematopoietic necrosis virus (IHNV) or Renibacterium salmoninarum (BKD)'),
+            ('10.1002/fsh.10985', 'Inadvertent Hatchery Rainbow Trout Oncorhynchus mykiss Discovered in Native Westslope Cutthroat Trout Oncorhynchus clarkii lewisi Habitat: A Cautionary Tale'),
+            ('10.1201/9781003077770-78', 'Fish Farming Technology - Biological basis for landbased farming of Atlantic salmon: Growth'),
+            ('10.2458/v24i1.20963', 'Petri dishes of an archipelago: the ecological rubble of the Chilean salmon farming industry'),
+            ('10.1007/s11160-022-09714-x', 'A review of marine stressors impacting Atlantic salmon Salmo salar, with an assessment of the major threats to English stocks'),
+            ('10.3354/dao01972', 'Real-time PCR detection of Moritella viscosa, the likely causal agent of winter-ulcer in Atlantic salmon Salmo salar and rainbow trout Oncorhynchus mykiss'),
+            ('10.18174/371265', 'Next-generation salmonid alphavirus vaccine development'),
+            ('10.14288/1.0058967', 'Physico-chemical aspects of sediment recovery at two abandoned salmon farm sites in British Columbia'),
+            ('10.1038/s41598-019-39080-x', 'Wound healing in post-smolt Atlantic salmon (Salmo salar L.)'),
+            ('10.1111/jfb.12710', 'Chronic stress of rainbow trout Oncorhynchus mykiss at high altitude: a field study'),
+            ('10.15586/ijfs.v38i2.3600', 'Environmental effects on nutrient composition of Turkish Salmon (Oncorhynchus mykiss): a comparison between marine and reservoir systems'),
+            ('10.6084/m9.figshare.31147177.v1', 'Salmon'),
+            ('10.56093/ehyqc013', 'Pathology of Aeromonas hydrophila infection in rainbow trout (Oncorhynchus mykiss) of Himachal Pradesh'),
+            ('10.1007/s10750-026-06204-0', 'Ecological patterns of benthic communities in relation to salmon aquaculture in the Inner Sea of Chiloé (southern Chile)'),
+          ]
+
+          def norm_doi(s):
+              s = (s or '').strip().lower()
+              s = re.sub(r'^https?://doi.org/', '', s)
+              s = re.sub(r'^doi:\s*', '', s)
+              return s.rstrip(' .;,')
+
+          def norm_title(s):
+              return re.sub(r'[^a-z0-9]+', ' ', (s or '').lower()).strip()
+
+          def title_score(expected, observed):
+              a=set(norm_title(expected).split()); b=set(norm_title(observed).split())
+              return len(a & b) / max(1, len(a | b))
+
+          def get(url, **kwargs):
+              for attempt in range(5):
+                  r=session.get(url, timeout=90, allow_redirects=True, **kwargs)
+                  if r.status_code not in (429,500,502,503,504) or attempt == 4:
+                      return r
+                  time.sleep(min(30, 2 ** attempt))
+
+          def pdf_text(content):
+              path=OUT/'tmp.pdf'; path.write_bytes(content)
+              try:
+                  reader=PdfReader(str(path)); return '\n'.join((p.extract_text() or '') for p in reader.pages)
+              finally:
+                  path.unlink(missing_ok=True)
+
+          def validate_pdf(content, expected_title, expected_doi):
+              if not content.startswith(b'%PDF'):
+                  return {'ok':False,'reason':'not_pdf'}
+              text=pdf_text(content)
+              lower=text.lower()
+              refs=bool(re.search(r'\b(references|bibliography|literature cited)\b',lower))
+              markers=len(re.findall(r'(?:\[[0-9]{1,3}\]|(?:^|\s)[0-9]{1,3}\.)', text))
+              dois={norm_doi(x) for x in re.findall(r'10\.\d{4,9}/[-._;()/:A-Z0-9]+',text,re.I)}
+              doi_ok=not expected_doi or norm_doi(expected_doi) in dois
+              title_head=text[:15000]
+              ts=title_score(expected_title,title_head)
+              ok=len(text)>=5000 and refs and markers>=3 and (doi_ok or ts>=0.25)
+              reason='complete' if ok else ';'.join(x for x in [
+                  'insufficient_text' if len(text)<5000 else '',
+                  'no_reference_section' if not refs else '',
+                  'few_reference_markers' if markers<3 else '',
+                  'identity_mismatch' if not doi_ok and ts<0.25 else ''
+              ] if x)
+              return {'ok':ok,'text_chars':len(text),'reference_markers':markers,'observed_dois':sorted(dois),'title_score':ts,'doi_match':doi_ok,'reason':reason}
+
+          def validate_xml(content, expected_title, expected_doi):
+              try:
+                  root=etree.fromstring(content)
+                  title_nodes=root.xpath('//*[local-name()="titleStmt"]//*[local-name()="title"] | //*[local-name()="article-title"]')
+                  observed_title=' '.join(''.join(title_nodes[0].itertext()).split()) if title_nodes else ''
+                  doi_nodes=root.xpath('//*[local-name()="idno" and translate(@type,"DOI","doi")="doi"] | //*[local-name()="pub-id" and translate(@pub-id-type,"DOI","doi")="doi"]')
+                  observed_dois={norm_doi(' '.join(''.join(n.itertext()).split())) for n in doi_nodes}
+                  body=' '.join(' '.join(x.itertext()).split() for x in root.xpath('//*[local-name()="body"]'))
+                  refs=len(root.xpath('//*[local-name()="listBibl"]//*[local-name()="biblStruct"] | //*[local-name()="ref"]'))
+                  ts=title_score(expected_title,observed_title)
+                  doi_ok=not expected_doi or norm_doi(expected_doi) in observed_dois
+                  ok=len(body)>=5000 and refs>=3 and ts>=0.70 and (doi_ok or not expected_doi)
+                  return {'ok':ok,'text_chars':len(body),'reference_count':refs,'observed_dois':sorted(x for x in observed_dois if x),'title_score':ts,'doi_match':doi_ok,'reason':'complete' if ok else 'xml_identity_or_structure_failure'}
+              except Exception as e:
+                  return {'ok':False,'reason':f'xml_parse_error:{e}'}
+
+          def candidate_from_openalex(doi, title):
+              q=requests.utils.quote(doi)
+              r=get(f'https://api.openalex.org/works/https://doi.org/{q}')
+              out={'http':r.status_code,'candidates':[],'raw_file':None}
+              (AUDIT/f'openalex_{norm_doi(doi).replace("/","_")}.json').write_text(r.text,encoding='utf-8')
+              if not r.ok: return out
+              w=r.json(); wid=(w.get('id') or '').rstrip('/').split('/')[-1]
+              key=os.environ.get('OPENALEX_API_KEY','')
+              if key and wid:
+                  if w.get('has_content',{}).get('grobid_xml'):
+                      rr=get(f'https://content.openalex.org/works/{wid}.grobid-xml',params={'api_key':key})
+                      out['tei_http']=rr.status_code
+                      if rr.ok and rr.content: out['candidates'].append(('openalex_tei',rr.url,rr.content,rr.headers.get('content-type','application/xml')))
+                  if w.get('has_content',{}).get('pdf'):
+                      rr=get(f'https://content.openalex.org/works/{wid}.pdf',params={'api_key':key})
+                      out['pdf_http']=rr.status_code
+                      if rr.ok and rr.content.startswith(b'%PDF'): out['candidates'].append(('openalex_pdf',rr.url,rr.content,rr.headers.get('content-type','application/pdf')))
+              # Always expose OpenAlex location metadata, even if its content API is not available.
+              for loc in w.get('locations') or []:
+                  for key2 in ('pdf_url','landing_page_url'):
+                      u=(loc.get(key2) or '').strip()
+                      if u.startswith('http'): out['candidates'].append(('openalex_location',u,None,''))
+              for key2 in ('best_oa_location',):
+                  loc=w.get(key2) or {}
+                  u=(loc.get('pdf_url') or loc.get('landing_page_url') or '').strip()
+                  if u.startswith('http'): out['candidates'].insert(0,('openalex_best_location',u,None,''))
+              return out
+
+          def candidate_from_epmc(doi):
+              q=requests.utils.quote(f'DOI:"{doi}"')
+              r=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/search?query={q}&resultType=core&format=json')
+              out={'http':r.status_code,'candidates':[]}
+              (AUDIT/f'epmc_{norm_doi(doi).replace("/","_")}.json').write_text(r.text,encoding='utf-8')
+              if not r.ok: return out
+              hits=r.json().get('resultList',{}).get('result',[])
+              exact=[h for h in hits if norm_doi(h.get('doi'))==norm_doi(doi)]
+              if exact and exact[0].get('pmcid'):
+                  pmcid=exact[0]['pmcid']; rr=get(f'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML')
+                  out['fulltext_http']=rr.status_code
+                  if rr.ok and rr.content: out['candidates'].append(('europepmc_xml',rr.url,rr.content,rr.headers.get('content-type','application/xml')))
+              return out
+
+          def candidate_from_unpaywall(doi):
+              email=os.environ.get('UNPAYWALL_EMAIL') or 'fulltexttest@example.org'
+              r=get(f'https://api.unpaywall.org/v2/{requests.utils.quote(doi)}',params={'email':email})
+              out={'http':r.status_code,'candidates':[]}
+              (AUDIT/f'unpaywall_{norm_doi(doi).replace("/","_")}.json').write_text(r.text,encoding='utf-8')
+              if not r.ok: return out
+              data=r.json()
+              locs=[]
+              best=data.get('best_oa_location')
+              if best: locs.append(best)
+              locs.extend(data.get('oa_locations') or [])
+              seen=set()
+              for loc in locs:
+                  for k in ('url_for_pdf','url'):
+                      u=(loc.get(k) or '').strip()
+                      if u.startswith('http') and u not in seen:
+                          seen.add(u); out['candidates'].append(('unpaywall',u,None,''))
+              return out
+
+          audit=[]
+          for n,(doi,title) in enumerate(RECORDS,1):
+              row={'n':n,'doi':doi,'title':title,'selected_source':'','verified_complete':False,'source_url':'','reason':'','openalex_http':'','epmc_http':'','unpaywall_http':'','candidate_count':0}
+              sources=[('openalex',candidate_from_openalex),('europepmc',candidate_from_epmc),('unpaywall',candidate_from_unpaywall)]
+              allc=[]
+              for name,fn in sources:
+                  try:
+                      z=fn(doi,title) if name=='openalex' else fn(doi)
+                      row[f'{name}_http']=z.get('http','')
+                      allc.extend([(name,)+c for c in z.get('candidates',[])])
+                  except Exception as e:
+                      row[f'{name}_http']='error'; row[f'{name}_error']=repr(e)
+              row['candidate_count']=len(allc)
+              seen=set()
+              for source,kind,url,content,ctype in allc:
+                  # Content returned directly by APIs can be validated without an extra request.
+                  if content is not None:
+                      rr={'status':200,'url':url,'content_type':ctype,'content':content}
+                  else:
+                      if url in seen: continue
+                      seen.add(url)
+                      r=get(url); rr={'status':r.status_code,'url':r.url,'content_type':r.headers.get('content-type',''),'content':r.content}
+                  ct=rr['content_type'].lower(); data=rr['content']
+                  if not data: continue
+                  if 'pdf' in ct or data.startswith(b'%PDF'):
+                      v=validate_pdf(data,title,doi)
+                      if v.get('ok'):
+                          stem=re.sub(r'[^A-Za-z0-9._-]+','_',doi)
+                          (DOCS/f'{n:02d}_{stem}.pdf').write_bytes(data)
+                          row.update({'selected_source':source,'verified_complete':True,'source_url':rr['url'],'reason':v['reason'],'validation':v})
+                          break
+                  elif 'xml' in ct or data.lstrip().startswith(b'<?xml') or b'<article' in data[:1000]:
+                      v=validate_xml(data,title,doi)
+                      if v.get('ok'):
+                          stem=re.sub(r'[^A-Za-z0-9._-]+','_',doi)
+                          (DOCS/f'{n:02d}_{stem}.xml').write_bytes(data)
+                          row.update({'selected_source':source,'verified_complete':True,'source_url':rr['url'],'reason':v['reason'],'validation':v})
+                          break
+              audit.append(row)
+              print(f'[{n}/14] {doi}: {row["verified_complete"]} via {row["selected_source"] or "none"}')
+              time.sleep(1)
+
+          with (OUT/'audit.csv').open('w',newline='',encoding='utf-8') as f:
+              fields=sorted({k for r in audit for k in r})
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader()
+              for r in audit:
+                  rr=dict(r)
+                  if isinstance(rr.get('validation'),dict): rr['validation']=json.dumps(rr['validation'],sort_keys=True)
+                  w.writerow(rr)
+          (OUT/'audit.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False,default=str),encoding='utf-8')
+          print('Completed three-source retrieval experiment.')
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openalex-three-source-results-${{ github.run_id }}
+          path: openalex_three_source_results/
+          if-no-files-found: warn
