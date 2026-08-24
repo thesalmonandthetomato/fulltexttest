@@ -1,6 +1,9 @@
 # ============================================================
 # OpenAlex content audit
 # ============================================================
+# Metadata-only audit: no PDF/XML content is downloaded.
+# Resumable and resilient to transient OpenAlex timeouts.
+# ============================================================
 
 library(httr2)
 library(readr)
@@ -45,7 +48,6 @@ safe_bool <- function(x) {
 if (!file.exists(INPUT_FILE)) stop("Cannot find input file: ", INPUT_FILE, call. = FALSE)
 
 master <- read_csv(INPUT_FILE, show_col_types = FALSE)
-
 if (!"doi" %in% names(master)) {
   stop("The main database does not contain a column called 'doi'. Columns found: ",
        paste(names(master), collapse = ", "), call. = FALSE)
@@ -59,11 +61,25 @@ DOIS <- master |>
 
 message("Unique DOI records: ", nrow(DOIS))
 
-if (file.exists(OUT_FILE) && file.exists(STATE_FILE)) {
-  message("Existing audit found; attempting to resume.")
-  results <- read_csv(OUT_FILE, show_col_types = FALSE)
-  state <- read_csv(STATE_FILE, show_col_types = FALSE)
-  completed_n <- max(state$completed_n, na.rm = TRUE)
+# IMPORTANT: because the previous version constructed the DOI filter incorrectly,
+# an old audit must not be resumed. Rename/delete the old audit files before running
+# this corrected version. We detect the old state explicitly below.
+if (file.exists(STATE_FILE) && file.exists(OUT_FILE)) {
+  old_state <- suppressWarnings(read_csv(STATE_FILE, show_col_types = FALSE))
+  if ("script_version" %in% names(old_state) && any(old_state$script_version == "2")) {
+    results <- read_csv(OUT_FILE, show_col_types = FALSE)
+    completed_n <- max(old_state$completed_n, na.rm = TRUE)
+    message("Resuming corrected audit from DOI ", completed_n + 1L, ".")
+  } else {
+    stop(
+      "Existing audit files were produced by the previous (incorrect) DOI query. ",
+      "Delete/rename these files before starting the corrected audit:\n",
+      "  ", OUT_FILE, "\n",
+      "  ", STATE_FILE, "\n",
+      "Then run this script again from DOI 1.",
+      call. = FALSE
+    )
+  }
 } else {
   results <- tibble()
   completed_n <- 0L
@@ -72,12 +88,11 @@ if (file.exists(OUT_FILE) && file.exists(STATE_FILE)) {
 # ------------------------------------------------------------
 # ONE OPENALEX REQUEST
 # ------------------------------------------------------------
+# Use raw normalized DOI values in filter=doi:, not https://doi.org/ URLs.
+# This is the documented OpenAlex DOI filter syntax.
 
 request_openalex <- function(dois) {
-  doi_filter <- paste(
-    paste0("https://doi.org/", URLencode(dois, reserved = TRUE)),
-    collapse = "|"
-  )
+  doi_filter <- paste(dois, collapse = "|")
 
   req <- request(API_URL) |>
     req_url_query(
@@ -89,11 +104,12 @@ request_openalex <- function(dois) {
         "has_fulltext", "content_urls"
       ), collapse = ",")
     ) |>
-    req_user_agent("fulltexttest/openalex-content-audit/1.1") |>
+    req_user_agent("fulltexttest/openalex-content-audit/2.0") |>
     req_timeout(90)
 
-  if (nzchar(OPENALEX_API_KEY)) req <- req |>
-    req_url_query(api_key = OPENALEX_API_KEY)
+  if (nzchar(OPENALEX_API_KEY)) {
+    req <- req |> req_url_query(api_key = OPENALEX_API_KEY)
+  }
 
   for (attempt in 1:4) {
     message("  OpenAlex metadata request: ", length(dois),
@@ -129,49 +145,30 @@ request_openalex <- function(dois) {
 
 # ------------------------------------------------------------
 # RESILIENT BATCH REQUEST
-#
-# If a 100-DOI request repeatedly fails (e.g. HTTP 504),
-# automatically split it into smaller requests. The caller
-# still receives one combined payload for the original batch.
 # ------------------------------------------------------------
 
-get_openalex_batch <- function(dois, depth = 0L) {
-
+get_openalex_batch <- function(dois) {
   payload <- request_openalex(dois)
-
   if (!is.null(payload)) return(payload)
 
   if (length(dois) == 1L) {
-    stop(
-      "OpenAlex request failed repeatedly for DOI: ",
-      dois[[1]],
-      call. = FALSE
-    )
+    stop("OpenAlex request failed repeatedly for DOI: ", dois[[1]], call. = FALSE)
   }
 
   midpoint <- floor(length(dois) / 2)
   left <- dois[seq_len(midpoint)]
   right <- dois[(midpoint + 1):length(dois)]
 
-  message("")
-  message(
-    "  Request failed after retries; splitting ",
-    length(dois),
-    " DOIs into ",
-    length(left),
-    " + ",
-    length(right)
-  )
+  message("  Request failed after retries; splitting ", length(dois),
+          " DOIs into ", length(left), " + ", length(right))
 
-  left_payload <- get_openalex_batch(left, depth + 1L)
-  right_payload <- get_openalex_batch(right, depth + 1L)
+  left_payload <- get_openalex_batch(left)
+  right_payload <- get_openalex_batch(right)
 
   list(
     meta = list(count = 0L),
-    results = c(
-      left_payload$results %||% list(),
-      right_payload$results %||% list()
-    )
+    results = c(left_payload$results %||% list(),
+                right_payload$results %||% list())
   )
 }
 
@@ -213,6 +210,10 @@ work_to_row <- function(input_doi, work) {
   )
 }
 
+# ------------------------------------------------------------
+# PROCESS BATCHES
+# ------------------------------------------------------------
+
 if (completed_n < nrow(DOIS)) {
   start_positions <- seq(from = completed_n + 1L, to = nrow(DOIS), by = BATCH_SIZE)
 
@@ -227,6 +228,17 @@ if (completed_n < nrow(DOIS)) {
 
     payload <- get_openalex_batch(batch$doi)
     works <- payload$results %||% list()
+
+    # Sanity check: a zero-result batch is suspicious and must not be silently
+    # interpreted as 100 missing OpenAlex records.
+    if (length(works) == 0L) {
+      stop(
+        "OpenAlex returned ZERO works for a batch of ", length(batch$doi),
+        " DOIs (", start, "-", end, "). This is treated as a query failure,",
+        " not as 100 genuine non-matches. No checkpoint was written for this batch.",
+        call. = FALSE
+      )
+    }
 
     by_doi <- setNames(
       works,
@@ -245,8 +257,11 @@ if (completed_n < nrow(DOIS)) {
 
     completed_n <- end
     write_csv(
-      tibble(completed_n = completed_n,
-             updated_at_utc = format(Sys.time(), tz = "UTC")),
+      tibble(
+        script_version = "2",
+        completed_n = completed_n,
+        updated_at_utc = format(Sys.time(), tz = "UTC")
+      ),
       STATE_FILE
     )
 
@@ -255,6 +270,10 @@ if (completed_n < nrow(DOIS)) {
 } else {
   message("Audit already complete; no metadata requests required.")
 }
+
+# ------------------------------------------------------------
+# SUMMARY
+# ------------------------------------------------------------
 
 n <- nrow(results)
 
