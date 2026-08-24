@@ -5,8 +5,8 @@ import requests
 from lxml import etree
 from pypdf import PdfReader
 
-MANIFEST=Path('data/living_evidence_map_master.csv'); STATE=Path('data/openalex_free_state.json'); STAGE=Path('daily_openalex_batch'); STAGE.mkdir(exist_ok=True); BATCH_SIZE=100
-session=requests.Session(); session.headers['User-Agent']='fulltexttest/openalex-bulk-pdf/5.1'
+MANIFEST=Path('data/living_evidence_map_master.csv'); STATE=Path('data/openalex_free_state.json'); STAGE=Path('daily_openalex_batch'); STAGE.mkdir(exist_ok=True); BATCH_SIZE=100; CHECKPOINT_EVERY=25
+session=requests.Session(); session.headers['User-Agent']='fulltexttest/openalex-bulk-pdf/5.2'
 def log(x): print(f'PROGRESS: {x}',flush=True)
 def norm(x): return re.sub(r'^(?:https?://doi.org/|doi:)','',x.strip(),flags=re.I).rstrip(' .;,').lower()
 def host(u):
@@ -54,6 +54,10 @@ def download_pdf(input_doi,work,url):
  if r is None:return None,'request_failed',host(url)
  if not r.ok or not r.content:return None,f'http_{r.status_code}',host(r.url or url)
  got,err=store(input_doi,work,'OpenAlex-discovered OA PDF',r.url,r.content,r.headers.get('content-type',''));return got,err,host(r.url or url)
+def write_checkpoint(state, successes, failures, deferred, reason):
+ STATE.write_text(json.dumps(state,indent=2,ensure_ascii=False),encoding='utf-8')
+ Path('daily-results.json').write_text(json.dumps({'run_id':os.environ.get('GITHUB_RUN_ID','manual'),'checkpoint_reason':reason,'fulltexts_so_far':len(successes),'failures_so_far':len(failures),'deferred_host_rate_limits_so_far':len(deferred)},indent=2,ensure_ascii=False),encoding='utf-8')
+ log(f'CHECKPOINT SAVED reason={reason} completed={len(state.get("completed",{}))} failed={len(state.get("failed",{}))}')
 key=os.environ.get('OPENALEX_API_KEY');token=os.environ.get('ZENODO_TOKEN')
 if not key or not token:raise SystemExit('OPENALEX_API_KEY and ZENODO_TOKEN are required')
 if not MANIFEST.exists():raise SystemExit(f'Missing {MANIFEST}')
@@ -62,30 +66,41 @@ with MANIFEST.open(newline='',encoding='utf-8') as f:
  for row in csv.DictReader(f):
   doi=norm(row.get('doi',''))
   if doi and doi not in completed:rows.append(doi)
-log(f'START queue={len(rows)} | no daily full-text cap | OpenAlex metadata batch_size={BATCH_SIZE}')
-successes=[];failures=[];deferred=[];start=time.time();blocked_until=defaultdict(float)
+log(f'START queue={len(rows)} | no daily full-text cap | OpenAlex metadata batch_size={BATCH_SIZE} | checkpoint_every={CHECKPOINT_EVERY}')
+successes=[];failures=[];deferred=[];start=time.time();blocked_until=defaultdict(float);processed_since_checkpoint=0
 for start_i in range(0,len(rows),BATCH_SIZE):
  batch=rows[start_i:start_i+BATCH_SIZE];log(f'METADATA BATCH {start_i+1}-{start_i+len(batch)} of {len(rows)}');r=request('GET','https://api.openalex.org/works',params={'filter':'doi:'+'|'.join(batch),'per-page':100,'api_key':key})
  if r is None or not r.ok:
-  status='metadata_request_failed' if r is None else f'metadata_http_{r.status_code}';log(f'BATCH FAIL {start_i+1}-{start_i+len(batch)}: {status}');failures.extend({'input_doi':d,'status':status} for d in batch);continue
+  status='metadata_request_failed' if r is None else f'metadata_http_{r.status_code}';log(f'BATCH FAIL {start_i+1}-{start_i+len(batch)}: {status}')
+  for d in batch: failures.append({'input_doi':d,'status':status})
+  processed_since_checkpoint+=len(batch)
+  if processed_since_checkpoint>=CHECKPOINT_EVERY:
+   write_checkpoint(state,successes,failures,deferred,f'after_metadata_batch_{start_i+len(batch)}');processed_since_checkpoint=0
+  continue
  works=r.json().get('results',[]);by_doi={norm(w.get('doi','')):w for w in works if w.get('doi')};log(f'METADATA BATCH RETURNED {len(works)} records; matched={sum(1 for d in batch if d in by_doi)}')
  for n,input_doi in enumerate(batch,start_i+1):
   work=by_doi.get(input_doi)
-  if not work:failures.append({'input_doi':input_doi,'status':'openalex_no_exact_doi_match'});log(f'NO MATCH {n}: {input_doi}');continue
-  locations=[]
-  if work.get('best_oa_location'):locations.append(work['best_oa_location'])
-  locations.extend(work.get('locations') or []);urls=[];seen=set()
-  for loc in locations:
-   if isinstance(loc,dict) and loc.get('pdf_url') and loc['pdf_url'] not in seen:seen.add(loc['pdf_url']);urls.append(loc['pdf_url'])
-  log(f'DOI {n}/{len(rows)} {input_doi} | exact_match=yes | pdf_urls={len(urls)}');got=None;error='no_pdf_url'
-  for pdf_url in urls:
-   h=host(pdf_url)
-   if blocked_until[h]>time.time():deferred.append({'input_doi':input_doi,'openalex_doi':work.get('doi'),'openalex_id':work.get('id'),'status':'host_rate_limited','host':h,'source_url':pdf_url,'best_oa_location':work.get('best_oa_location'),'locations':work.get('locations',[])});log(f'DEFER {input_doi}: host={h} paused after 429');continue
-   log(f'PDF GET {input_doi} -> {pdf_url}');got,error,h2=download_pdf(input_doi,work,pdf_url)
-   if got:break
-   if error=='http_429':blocked_until[h2]=time.time()+3600;deferred.append({'input_doi':input_doi,'openalex_doi':work.get('doi'),'openalex_id':work.get('id'),'status':'host_rate_limited','host':h2,'source_url':pdf_url,'best_oa_location':work.get('best_oa_location'),'locations':work.get('locations',[])});log(f'DEFER HOST {h2}: 429; pausing this host for 60 minutes')
-  if got:successes.append(got);log(f'SUCCESS {len(successes)} {input_doi} source=OpenAlex-discovered OA PDF chars={got["text_chars"]:,}')
-  elif not any(x['input_doi']==input_doi for x in deferred):failures.append({'input_doi':input_doi,'openalex_doi':work.get('doi'),'openalex_id':work.get('id'),'status':error,'best_oa_location':work.get('best_oa_location'),'locations':work.get('locations',[]),'pdf_urls':urls});log(f'FAIL {input_doi}: {error}')
+  if not work:failures.append({'input_doi':input_doi,'status':'openalex_no_exact_doi_match'});log(f'NO MATCH {n}: {input_doi}');processed_since_checkpoint+=1
+  else:
+   locations=[]
+   if work.get('best_oa_location'):locations.append(work['best_oa_location'])
+   locations.extend(work.get('locations') or []);urls=[];seen=set()
+   for loc in locations:
+    if isinstance(loc,dict) and loc.get('pdf_url') and loc['pdf_url'] not in seen:seen.add(loc['pdf_url']);urls.append(loc['pdf_url'])
+   log(f'DOI {n}/{len(rows)} {input_doi} | exact_match=yes | pdf_urls={len(urls)}');got=None;error='no_pdf_url'
+   for pdf_url in urls:
+    h=host(pdf_url)
+    if blocked_until[h]>time.time():deferred.append({'input_doi':input_doi,'openalex_doi':work.get('doi'),'openalex_id':work.get('id'),'status':'host_rate_limited','host':h,'source_url':pdf_url,'best_oa_location':work.get('best_oa_location'),'locations':work.get('locations',[]),'pdf_urls':urls});log(f'DEFER {input_doi}: host={h} paused after 429');continue
+    log(f'PDF GET {input_doi} -> {pdf_url}');got,error,h2=download_pdf(input_doi,work,pdf_url)
+    if got:break
+    if error=='http_429':blocked_until[h2]=time.time()+3600;deferred.append({'input_doi':input_doi,'openalex_doi':work.get('doi'),'openalex_id':work.get('id'),'status':'host_rate_limited','host':h2,'source_url':pdf_url,'best_oa_location':work.get('best_oa_location'),'locations':work.get('locations',[]),'pdf_urls':urls});log(f'DEFER HOST {h2}: 429; pausing this host for 60 minutes')
+   if got:successes.append(got);state.setdefault('completed',{})[input_doi]={'date':time.strftime('%Y-%m-%d',time.gmtime()),'run_id':os.environ.get('GITHUB_RUN_ID','manual'),'sha256':got['sha256'],'format':got['format'],'source':got['source'],'source_url':got['source_url'],'openalex_doi':got['openalex_doi'],'openalex_id':got['openalex_id']};log(f'SUCCESS {len(successes)} {input_doi} source=OpenAlex-discovered OA PDF chars={got["text_chars"]:,}');processed_since_checkpoint+=1
+   elif not any(x['input_doi']==input_doi for x in deferred):failures.append({'input_doi':input_doi,'openalex_doi':work.get('doi'),'openalex_id':work.get('id'),'status':error,'best_oa_location':work.get('best_oa_location'),'locations':work.get('locations',[]),'pdf_urls':urls});state.setdefault('failed',{})[input_doi]=failures[-1];log(f'FAIL {input_doi}: {error}');processed_since_checkpoint+=1
+   else:
+    state.setdefault('failed',{})[input_doi]=next(x for x in deferred if x['input_doi']==input_doi);processed_since_checkpoint+=1
+  if processed_since_checkpoint>=CHECKPOINT_EVERY:
+   write_checkpoint(state,successes,failures,deferred,f'after_doi_{n}');processed_since_checkpoint=0
+write_checkpoint(state,successes,failures,deferred,'retrieval_complete_before_zenodo')
 log(f'RETRIEVAL COMPLETE successes={len(successes)} failures={len(failures)} deferred_host_rate_limits={len(deferred)} elapsed_min={(time.time()-start)/60:.1f}')
 if not successes:raise SystemExit('No full texts retrieved; refusing to create empty archive')
 Path('daily-pdf-manifest.csv').write_text('input_doi,openalex_doi,doi_match,source_url,status\n'+'\n'.join(f'{x["input_doi"]},{x.get("openalex_doi","")},{x["doi_match"]},{x["source_url"]},success' for x in successes)+'\n',encoding='utf-8')
@@ -97,6 +112,7 @@ meta={'metadata':{'title':f'fulltexttest OpenAlex-discovered OA PDFs {batch_date
 r=requests.put(f'https://zenodo.org/api/deposit/depositions/{dep_id}',json=meta,headers={**headers,'Content-Type':'application/json'},timeout=(10,60));r.raise_for_status();log('ZENODO METADATA SAVED')
 with archive.open('rb') as fp:log(f'ZENODO UPLOAD {archive.stat().st_size/1024/1024:.1f} MiB');r=requests.put(f'{bucket}/{archive.name}',data=fp,headers=headers,timeout=(10,1800));r.raise_for_status()
 log('ZENODO UPLOAD COMPLETE');r=requests.post(f'https://zenodo.org/api/deposit/depositions/{dep_id}/actions/publish',headers=headers,timeout=(10,120));r.raise_for_status();published=r.json();log(f'ZENODO PUBLISHED id={published.get("id")} doi={published.get("doi")}')
-for item in successes:state.setdefault('completed',{})[item['input_doi']]={'date':batch_date,'run_id':run_id,'zenodo_record':published.get('id'),'zenodo_doi':published.get('doi'),'sha256':item['sha256'],'format':item['format'],'source':item['source'],'source_url':item['source_url'],'openalex_doi':item['openalex_doi']}
+for item in successes:state.setdefault('completed',{})[item['input_doi']].update({'zenodo_record':published.get('id'),'zenodo_doi':published.get('doi')})
 for item in failures+deferred:state.setdefault('failed',{})[item['input_doi']]=item
-STATE.write_text(json.dumps(state,indent=2,ensure_ascii=False),encoding='utf-8');Path('daily-results.json').write_text(json.dumps({'date':batch_date,'run_id':run_id,'fulltexts_archived':len(successes),'failures':failures,'deferred_host_rate_limits':deferred,'zenodo':{'record_id':published.get('id'),'doi':published.get('doi')}},indent=2,ensure_ascii=False),encoding='utf-8');log('CHECKPOINT STATE WRITTEN AFTER ZENODO PUBLICATION')
+write_checkpoint(state,successes,failures,deferred,'zenodo_published')
+log('CHECKPOINT STATE WRITTEN AFTER ZENODO PUBLICATION')
