@@ -1,8 +1,19 @@
 name: OpenAlex daily external OA full-text retrieval
 on:
   workflow_dispatch:
+    inputs:
+      batch:
+        description: 'Which quarter of the 13,389-record manifest to process'
+        required: true
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+        default: '1'
 concurrency:
-  group: openalex-daily-free-content
+  group: openalex-free-content-batch-${{ inputs.batch }}
   cancel-in-progress: false
 jobs:
   retrieve:
@@ -17,6 +28,39 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check --no-input requests lxml pypdf
+      - name: Select stable manifest batch
+        env:
+          BATCH_NUMBER: ${{ inputs.batch }}
+        run: |
+          python - <<'PY'
+          import csv, os
+          from pathlib import Path
+          src = Path('data/living_evidence_map_master.csv')
+          tmp = Path('/tmp/living_evidence_map_master_batch.csv')
+          batch = int(os.environ['BATCH_NUMBER'])
+          if batch not in (1, 2, 3, 4):
+              raise SystemExit(f'Invalid batch: {batch}')
+          with src.open(newline='', encoding='utf-8') as f:
+              reader = csv.reader(f)
+              header = next(reader)
+              rows = list(reader)
+          total = len(rows)
+          q, r = divmod(total, 4)
+          sizes = [q + (1 if i < r else 0) for i in range(4)]
+          start = sum(sizes[:batch-1])
+          end = start + sizes[batch-1]
+          selected = rows[start:end]
+          with tmp.open('w', newline='', encoding='utf-8') as f:
+              writer = csv.writer(f)
+              writer.writerow(header)
+              writer.writerows(selected)
+          Path(src).write_text(tmp.read_text(encoding='utf-8'), encoding='utf-8')
+          print(f'MANIFEST TOTAL={total}')
+          print(f'BATCH={batch} START_RECORD={start+1} END_RECORD={end} SIZE={len(selected)}')
+          print(f'BATCH SIZES={sizes}')
+          if total != 13389:
+              print('WARNING: manifest no longer contains exactly 13,389 records; batches were calculated from the current manifest.')
+          PY
       - name: Check long-term storage is configured
         env:
           ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
@@ -36,26 +80,26 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add data/openalex_free_state.json
-          git diff --cached --quiet || git commit -m "Checkpoint daily external OA full-text retrieval"
+          git diff --cached --quiet || git commit -m "Checkpoint OpenAlex retrieval batch ${{ inputs.batch }}"
           git push
           echo 'CHECKPOINT: GitHub state committed'
-      - name: Upload retrieval audit
+      - name: Upload retrieval audit and restart checkpoint
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: openalex-external-oa-audit-${{ github.run_id }}
+          name: openalex-batch-${{ inputs.batch }}-audit-${{ github.run_id }}
           path: |
             daily-results.json
             daily-pdf-manifest.csv
             data/openalex_free_state.json
             daily_openalex_batch/**
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 30
       - name: Upload emergency checkpoint
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: openalex-emergency-checkpoint-${{ github.run_id }}
+          name: openalex-batch-${{ inputs.batch }}-emergency-checkpoint-${{ github.run_id }}
           path: |
             data/openalex_free_state.json
             daily-results.json
