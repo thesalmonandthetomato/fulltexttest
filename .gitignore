@@ -2,3 +2,7 @@
 .Rhistory
 .RData
 .Ruserdata
+
+# Local Scholar-assisted retrieval outputs
+retrieval/scholar_pdfs/
+retrieval/scholar_status.csv
