@@ -85,6 +85,16 @@ find_recent_pdf <- function(since) {
   paths[order(info$mtime, decreasing = TRUE)]
 }
 
+
+open_url <- function(url) {
+  if (Sys.info()[["sysname"]] == "Darwin") {
+    status <- suppressWarnings(system2("open", c("-a", "Google Chrome", url), stdout = FALSE, stderr = FALSE))
+    if (identical(status, 0L)) return(invisible(TRUE))
+  }
+  utils::browseURL(url)
+  invisible(TRUE)
+}
+
 move_pdf <- function(src, dest) {
   if (file.exists(dest)) return(TRUE)
   ok <- file.rename(src, dest)
@@ -168,7 +178,7 @@ for (i in seq_along(queue)) {
   cat("Opening Google Scholar in your default browser...\n")
 
   search_started <- Sys.time()
-  utils::browseURL(scholar_url)
+  open_url(scholar_url)
 
   repeat {
     cat(
@@ -192,12 +202,12 @@ for (i in seq_along(queue)) {
     }
 
     if (cmd == "o") {
-      utils::browseURL(scholar_url)
+      open_url(scholar_url)
       next
     }
 
     if (cmd == "d") {
-      utils::browseURL(doi_url)
+      open_url(doi_url)
       next
     }
 
