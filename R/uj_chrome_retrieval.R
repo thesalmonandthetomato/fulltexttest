@@ -27,7 +27,7 @@ if (!"doi" %in% names(dois)) stop("Input CSV needs a 'doi' column")
 dois$doi <- trimws(sub("^https?://(dx\\.)?doi\\.org/", "", dois$doi, ignore.case = TRUE))
 dois <- dois[nzchar(dois$doi) & !is.na(dois$doi), , drop = FALSE]
 if (!nrow(dois)) stop("No DOIs to retrieve")
-if (any(!grepl("^10\\.[0-9]{4,9}/\\S+$", dois$doi))) stop("Invalid DOI in input CSV")
+if (any(!grepl("^10\\.[0-9]{4,9}/[^[:space:]]+$", dois$doi))) stop("Invalid DOI in input CSV")
 dir.create(output, recursive = TRUE, showWarnings = FALSE)
 manifest <- file.path(output, "retrieval_manifest.csv")
 if (!file.exists(manifest)) {
@@ -38,7 +38,7 @@ if (!file.exists(manifest)) {
 }
 completed <- read.csv(manifest, stringsAsFactors = FALSE)
 # Reattempt non-successful cases on a subsequent run.
-done <- completed$doi[completed$status == "pdf_downloaded"]
+done <- completed$doi[completed$status == "pdf_downloaded_identity_verified"]
 dois <- dois[!dois$doi %in% done, , drop = FALSE]
 
 browser <- Chromote$new(browser = ChromeRemote$new(host = "127.0.0.1", port = port))
@@ -107,7 +107,7 @@ for (i in seq_len(nrow(dois))) {
       after <- setdiff(list.files(output, full.names = TRUE), before)
       valid <- after[vapply(after, is_pdf, logical(1))]
       if (length(valid)) {
-        save_result(doi, "pdf_downloaded", info, candidate,
+        save_result(doi, "pdf_signature_valid_identity_unverified", info, candidate,
                     file=basename(valid[1]))
       } else {
         save_result(doi, "needs_manual_or_adapter", info, candidate,
@@ -119,4 +119,5 @@ for (i in seq_len(nrow(dois))) {
   })
   if (i < nrow(dois)) Sys.sleep(delay)
 }
+try(session$close(), silent = TRUE)
 message("Manifest: ", manifest)
