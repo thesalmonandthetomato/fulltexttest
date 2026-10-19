@@ -21,10 +21,10 @@ if key:sess.headers["Authorization"]="Bearer "+key
 def normalize(x):return re.sub(r"[^a-z0-9]+"," ",unicodedata.normalize("NFKD",str(x or "").lower())).strip()
 def doi(x):return re.sub(r"^(https?://(dx\.)?doi\.org/|doi:)","",str(x or "").strip(),flags=re.I).lower().strip(" .,;")
 def match_title(a,b):return SequenceMatcher(None,normalize(a),normalize(b)).ratio()
-def get(url,params=None,timeout=28):
+def get(url,params=None,timeout=12):
  for trial in range(2):
   try:
-   r=sess.get(url,params=params,timeout=(12,timeout),headers={"Authorization":"Bearer "+key} if key and "api.core.ac.uk" in url else {"Authorization":""})
+   r=sess.get(url,params=params,timeout=(5,timeout),headers={"Authorization":"Bearer "+key} if key and "api.core.ac.uk" in url else {"Authorization":""})
    if r.status_code in (429,500,502,503,504) and trial==0:time.sleep(3);continue
    return r
   except requests.RequestException:
@@ -89,21 +89,24 @@ def upload():
 for n,row in enumerate(rows,1):
  rid=row["ris_record"]
  if rid in known:continue
+ print(f"RIS {rid} ({n}/{len(rows)}) START",flush=True)
  rd=doi(row.get("doi"));title=row["title"];year=re.sub("[^0-9]","",row.get("year",""))[:4]
  out={"ris_record":rid,"doi":rd,"status":"not_found","reason":"","filename":"","sha256":"","source_url":"","provider":"","deposit_id":""}
  results.append(out)
  works=[]
  # OpenAIRE V4 exact persistent identifier filter; do not assume every result is a real DOI match.
  if rd:
-  r=get("https://api.openaire.eu/graph/v4/research-products",{"filter":"ids.doi:"+rd,"page_size":5},timeout=30)
+  print(f"RIS {rid}: OpenAIRE metadata",flush=True)
+  r=get("https://api.openaire.eu/graph/v4/research-products",{"filter":"ids.doi:"+rd,"page_size":5},timeout=12)
   if r is not None and r.ok:
    for item in r.json().get("results",[]):
     if match_title(title,item.get("mainTitle") or item.get("title") or "")>=0.85:
      works.append(("OpenAIRE",item))
  # CORE authenticated queries when configured; unauthenticated limited to first 75 records.
- if key or core_calls<75:
+ if key:
   q='doi:"'+rd+'"' if rd else '"'+title[:145]+'"'
-  r=get("https://api.core.ac.uk/v3/search/works/",{"q":q,"limit":5},timeout=30);core_calls+=1
+  print(f"RIS {rid}: CORE metadata",flush=True)
+  r=get("https://api.core.ac.uk/v3/search/works/",{"q":q,"limit":5},timeout=12);core_calls+=1
   if r is not None and r.ok:
    for item in r.json().get("results",[]):
     candidate_doi=doi(item.get("doi"))
@@ -128,7 +131,7 @@ for n,row in enumerate(rows,1):
     if pending and (len(pending)>=75 or bytes_pending+len(data)>200*1024*1024):upload()
     pending.append((path,out));bytes_pending+=len(data);break
   if out["status"]=="success":break
- if n%25==0:
+ if n%10==0:
   dump();print("PROGRESS",n,"successes",sum(x["status"]=="success" for x in results),flush=True)
 upload();dump()
 for result in results:
