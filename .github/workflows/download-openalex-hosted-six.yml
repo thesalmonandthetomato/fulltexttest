@@ -3,6 +3,8 @@ on:
   push:
     paths:
       - '.github/workflows/download-openalex-hosted-six.yml'
+      - 'data/openalex_hosted_six_candidates.csv'
+      - 'scripts/download_openalex_hosted_six.py'
   workflow_dispatch:
 permissions:
   contents: read
