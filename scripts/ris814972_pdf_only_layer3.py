@@ -23,7 +23,7 @@ SESSION.headers.update({"User-Agent":"fulltexttest/ris814972-pdf-only/1.0 (resea
 rows=[r for r in csv.DictReader(INPUT.open(encoding="utf-8",newline="")) if r["ris_record"] not in PREVIOUS]
 manifest=[];attempts=[];pending=[];archive_bytes=0;deposits=[]
 def norm(x):
-    return re.sub(r"^(https?://(dx\\.)?doi\\.org/|doi:)","",(x or "").strip(),flags=re.I).lower().rstrip(" .;,")
+    return re.sub(r"^(https?://(dx\.)?doi\.org/|doi:)","",(x or "").strip(),flags=re.I).lower().rstrip(" .;,")
 def get(url,params=None,timeout=30):
     for n in range(3):
         try:
