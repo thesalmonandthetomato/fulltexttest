@@ -1,0 +1,31 @@
+name: RIS 814972 external direct PDF retrieval
+on:
+  push:
+    paths:
+      - '.github/workflows/ris-external-direct-pdf.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install packages
+        run: python -m pip install requests pypdf
+      - name: Retrieve and stage validated external PDFs
+        env:
+          ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
+        run: python scripts/retrieve_ris_external_pdf_layer.py
+      - name: Upload manifest and recovery files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ris814972-external-pdf-${{ github.run_id }}
+          path: outputs/ris_814972_external_pdf_layer/
+          if-no-files-found: warn
+          retention-days: 30
