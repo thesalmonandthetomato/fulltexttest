@@ -5,7 +5,7 @@ from pypdf import PdfReader
 base=Path('outputs/openalex_hosted_pdf_20261019');base.mkdir(parents=True,exist_ok=True)
 key=os.environ.get('OPENALEX_API_KEY');token=os.environ.get('ZENODO_TOKEN')
 if not key or not token:raise SystemExit('OPENALEX_API_KEY and ZENODO_TOKEN are required')
-records=[r for r in csv.DictReader(open('data/ris_openalex_audit_20261019.csv')) if r['openalex_pdf']=='yes']
+records=[r for r in csv.DictReader(open('data/openalex_hosted_six_candidates.csv'))]
 if len(records)!=6:raise SystemExit('Expected six OpenAlex PDF candidates, found '+str(len(records)))
 manifest=[]
 for row in records:
