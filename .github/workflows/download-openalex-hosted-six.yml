@@ -1,0 +1,31 @@
+name: Download audited OpenAlex PDFs to restricted Zenodo
+on:
+  push:
+    paths:
+      - '.github/workflows/download-openalex-hosted-six.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PDF parser
+        run: pip install requests pypdf
+      - name: Download validate and archive hosted PDFs
+        env:
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
+        run: python scripts/download_openalex_hosted_six.py
+      - name: Upload status and validated files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openalex-hosted-six-${{ github.run_id }}
+          path: outputs/openalex_hosted_pdf_20261019/
+          if-no-files-found: warn
