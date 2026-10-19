@@ -1,0 +1,34 @@
+name: RIS814972 CORE OpenAIRE PDF Layer 5
+on:
+  push:
+    paths:
+      - '.github/workflows/ris814972-core-openaire-layer5.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install requests pypdf
+          python -m py_compile scripts/ris814972_core_openaire_layer5.py
+      - name: Run verified PDF retrieval
+        env:
+          CORE_API_KEY: ${{ secrets.CORE_API_KEY }}
+          ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
+        run: python -u scripts/ris814972_core_openaire_layer5.py
+      - name: Preserve cumulative registry and audits
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ris814972-core-openaire-layer5-${{ github.run_id }}
+          path: |
+            outputs/ris814972_layer5/*.csv
+            outputs/ris814972_layer5/*.json
+          if-no-files-found: warn
