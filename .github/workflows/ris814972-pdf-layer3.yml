@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - '.github/workflows/ris814972-pdf-layer3.yml'
+      - 'scripts/ris814972_pdf_only_layer3.py'
   workflow_dispatch:
 permissions:
   contents: read
