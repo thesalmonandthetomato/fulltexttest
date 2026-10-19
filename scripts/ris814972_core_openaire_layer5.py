@@ -19,7 +19,7 @@ if not token:raise SystemExit("ZENODO_TOKEN required")
 sess=requests.Session();sess.headers["User-Agent"]="fulltexttest/ris814972-layer5/1.0 research PDF discovery"
 if key:sess.headers["Authorization"]="Bearer "+key
 def normalize(x):return re.sub(r"[^a-z0-9]+"," ",unicodedata.normalize("NFKD",str(x or "").lower())).strip()
-def doi(x):return re.sub(r"^(https?://(dx\\.)?doi\\.org/|doi:)","",str(x or "").strip(),flags=re.I).lower().strip(" .,;")
+def doi(x):return re.sub(r"^(https?://(dx\.)?doi\.org/|doi:)","",str(x or "").strip(),flags=re.I).lower().strip(" .,;")
 def match_title(a,b):return SequenceMatcher(None,normalize(a),normalize(b)).ratio()
 def get(url,params=None,timeout=28):
  for trial in range(2):
