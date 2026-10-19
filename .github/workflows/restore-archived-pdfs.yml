@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - .github/workflows/restore-archived-pdfs.yml
+      - scripts/restore_archived_pdfs.py
   workflow_dispatch:
 permissions:
   contents: read
