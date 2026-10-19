@@ -1,0 +1,36 @@
+name: RIS 814972 PDF-only Europe PMC and OA retrieval
+on:
+  push:
+    paths:
+      - '.github/workflows/ris814972-pdf-layer3.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies and validate script syntax
+        run: |
+          python -m pip install requests pypdf
+          python -m py_compile scripts/ris814972_pdf_only_layer3.py
+      - name: Retrieve and archive PDF-only full texts
+        env:
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          UNPAYWALL_EMAIL: ${{ secrets.UNPAYWALL_EMAIL }}
+          ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
+        run: python -u scripts/ris814972_pdf_only_layer3.py
+      - name: Upload source tracing manifests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ris814972-layer3-trace-${{ github.run_id }}
+          path: |
+            outputs/ris814972_pdf_layer3/*.csv
+            outputs/ris814972_pdf_layer3/*.json
+          if-no-files-found: warn
