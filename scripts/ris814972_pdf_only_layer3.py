@@ -12,7 +12,7 @@ from pypdf import PdfReader
 INPUT=Path("data/ris_openalex_audit_20261019.csv")
 OUT=Path("outputs/ris814972_pdf_layer3")
 OUT.mkdir(parents=True,exist_ok=True)
-PREVIOUS={"28","87","217","303","308","359","124","179","275","306"}
+PREVIOUS={"28","87","217","303","308","359","124","179","275","306","246"}
 MAX_ARCHIVE_BYTES=200*1024*1024
 MAX_FILES=75
 ZENODO_TOKEN=os.environ.get("ZENODO_TOKEN","")
@@ -94,6 +94,8 @@ for i,r in enumerate(rows,1):
                         add("EuropePMC",link)
                 pmcid=h.get("pmcid","")
                 if pmcid and h.get("isOpenAccess","").upper()=="Y":
+                    # PMC /pdf/ often responds with an HTML interstitial; it is still tested,
+                    # but only the PDF signature can yield a success.
                     add("EuropePMC_PMC_PDF",f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/pdf/")
         # OpenAlex: external locations, including non-.pdf suffixes (validated by PDF signature).
         resp=get("https://api.openalex.org/works/https://doi.org/"+quote(doi,safe=""),({"api_key":OA_KEY} if OA_KEY else {}))
@@ -117,7 +119,13 @@ for i,r in enumerate(rows,1):
         status=str(response.status_code) if response is not None else "connection_error"
         data=response.content if response is not None and response.ok else b""
         valid=inspect_pdf(data) if data else None
-        attempts.append({"ris_record":rid,"doi":doi,"provider":provider,"url":url,"status":status,"detail":"valid_pdf" if valid else "failed_or_not_valid_pdf"})
+        if valid: detail="valid_pdf"
+        elif response is None: detail="connection_error"
+        elif not response.ok: detail="http_error"
+        elif data.lstrip()[:200].lower().startswith((b"<!doctype html",b"<html")): detail="html_instead_of_pdf"
+        elif data[:4]!=b"%PDF": detail="non_pdf_response"
+        else: detail="invalid_or_unreadable_pdf"
+        attempts.append({"ris_record":rid,"doi":doi,"provider":provider,"url":url,"status":status,"detail":detail})
         if not valid:continue
         digest=hashlib.sha256(data).hexdigest()
         filename=f"RIS814972_record_{int(rid):04d}_sha_{digest[:14]}.pdf"
