@@ -1,0 +1,27 @@
+name: RIS OpenAlex availability audit
+on:
+  push:
+    paths:
+      - 'data/ris_openalex_audit_20261019.csv'
+      - 'scripts/audit_ris_openalex_availability.py'
+      - '.github/workflows/ris-openalex-availability-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Query OpenAlex metadata only
+        env:
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+        run: python3 scripts/audit_ris_openalex_availability.py
+      - name: Upload record-level availability and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ris-openalex-availability-${{ github.run_id }}
+          path: outputs/openalex_availability/
+          if-no-files-found: warn
