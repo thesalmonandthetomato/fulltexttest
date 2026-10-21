@@ -77,5 +77,43 @@ if(nrow(candidates)) {
   }
 }
 
+
+# Detail lookup for the original 44-part historical collection (metadata only).
+historical <- dd[grepl("^LivingEvidenceMap OpenAlex Full Text",dd$title),,drop=FALSE]
+details <- list()
+for(i in seq_len(nrow(historical))) {
+ id <- historical$deposition_id[i]
+ u <- paste0("https://zenodo.org/api/deposit/depositions/",id)
+ outcome <- tryCatch({
+  resp <- req_perform(request(u) |> req_headers(Authorization=paste("Bearer",token)) |> req_timeout(30) |> req_retry(max_tries=2))
+  d <- fromJSON(resp_body_string(resp),simplifyVector=FALSE)
+  fs <- d$files
+  if (is.null(fs)) fs <- list()
+  if(!length(fs)) {
+    # A distinct public-record API may expose published file metadata when deposit listing does not.
+    ru <- paste0("https://zenodo.org/api/records/",id)
+    rr <- tryCatch(req_perform(request(ru) |> req_headers(Authorization=paste("Bearer",token)) |> req_timeout(25)),error=function(e) NULL)
+    if(!is.null(rr) && resp_status(rr)<300) {
+      rd <- fromJSON(resp_body_string(rr),simplifyVector=FALSE)
+      fs <- rd$files
+      if(is.list(fs)&&!is.null(fs$entries)) fs <- fs$entries
+    }
+  }
+  names <- if(length(fs)) vapply(fs,function(z) {
+    n <- val(z$filename); if(!nzchar(n)) n<-val(z$key)
+    n
+  },character(1)) else character()
+  data.frame(deposition_id=id,title=historical$title[i],
+    status="ok",file_count=length(names),filenames=paste(names,collapse="; "),stringsAsFactors=FALSE)
+ },error=function(e) data.frame(deposition_id=id,title=historical$title[i],
+   status=paste0("error: ",substr(conditionMessage(e),1,120)),file_count=NA_integer_,
+   filenames="",stringsAsFactors=FALSE))
+ details[[length(details)+1L]]<-outcome
+ message("HISTORICAL DETAIL ",i,"/",nrow(historical)," id=",id," files=",outcome$file_count)
+}
+detail_df <- if(length(details)) do.call(rbind,details) else data.frame()
+write.csv(detail_df,"outputs/zenodo_inventory/historical_archive_details.csv",row.names=FALSE,na="")
+cat("HISTORICAL DETAILS TOTAL ",nrow(detail_df)," WITH FILES ",sum(detail_df$file_count>0,na.rm=TRUE),"\n")
+
 writeLines(report,"outputs/zenodo_inventory/summary.txt")
 cat(paste(report,collapse="\n"),"\n")
