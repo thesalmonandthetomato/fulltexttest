@@ -1,0 +1,28 @@
+name: Audit historical Zenodo PDF archives (read only)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - name: Install audit dependencies
+        run: Rscript -e 'install.packages(c("httr2","jsonlite"), repos="https://cloud.r-project.org")'
+      - name: Read restricted Zenodo deposit file inventories
+        env:
+          ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
+        run: Rscript scripts/zenodo_historical_inventory.R
+      - name: Upload audit files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zenodo-historical-pdf-audit-${{ github.run_id }}
+          path: outputs/zenodo_inventory/
+          if-no-files-found: warn
+          retention-days: 30
