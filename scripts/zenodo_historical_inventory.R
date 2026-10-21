@@ -59,5 +59,23 @@ report <- c(paste("Depositions:",nrow(dd)),paste("Files:",nrow(df)),
   paste("PDFs requiring DOI reconciliation:",sum(!nzchar(pdfs$doi_from_filename))),
   "File listing does not validate PDF contents or count unsuccessful retrieval attempts.",
   "Only deposits accessible to this credential are included.")
+
+# Identify historical archive deposits by the consistent retrieval titles and compressed-file names.
+archive_title <- grepl("openalex|full.?text|salmon|living.?evidence", dd$title, ignore.case=TRUE)
+archive_file <- grepl("\\.(zip|tar\\.gz|tgz)$",df$file_name,ignore.case=TRUE)
+candidate_ids <- unique(c(dd$deposition_id[archive_title],df$deposition_id[archive_file]))
+candidates <- dd[dd$deposition_id %in% candidate_ids,,drop=FALSE]
+candidate_files <- df[df$deposition_id %in% candidate_ids,,drop=FALSE]
+write.csv(candidates,"outputs/zenodo_inventory/candidate_archive_deposits.csv",row.names=FALSE,na="")
+write.csv(candidate_files,"outputs/zenodo_inventory/candidate_archive_files.csv",row.names=FALSE,na="")
+cat("HISTORICAL ARCHIVE CANDIDATES ",nrow(candidates)," DEPOSITS, ",sum(archive_file)," COMPRESSED FILES\\n",sep="")
+if(nrow(candidates)) {
+  for(i in seq_len(nrow(candidates))) {
+    id <- candidates$deposition_id[i]
+    ff <- candidate_files$file_name[candidate_files$deposition_id==id]
+    cat("CANDIDATE | ",id," | ",candidates$title[i]," | ",paste(ff,collapse="; "), "\\n",sep="")
+  }
+}
+
 writeLines(report,"outputs/zenodo_inventory/summary.txt")
 cat(paste(report,collapse="\n"),"\n")
