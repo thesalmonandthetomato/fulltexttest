@@ -1,6 +1,10 @@
 name: Audit historical Zenodo PDF archives (read only)
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/zenodo-historical-pdf-audit.yml'
+      - 'scripts/zenodo_historical_inventory.R'
 permissions:
   contents: read
 jobs:
